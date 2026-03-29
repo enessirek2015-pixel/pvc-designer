@@ -110,6 +110,8 @@ function App() {
     equalizeSelectedRowPanels,
     equalizeAllTransomHeights,
     applyOpeningTypeToPanels,
+    equalizePanelsByRefs,
+    equalizeTransomsByRefs,
     undo,
     redo
   } = useDesignerStore();
@@ -172,6 +174,14 @@ function App() {
           event.preventDefault();
           splitSelectedTransomHorizontal();
         }
+        if (event.key.toLowerCase() === "e" && multiSelection.length > 1) {
+          event.preventDefault();
+          equalizePanelsByRefs(multiSelection);
+        }
+        if (event.key.toLowerCase() === "r" && multiSelection.length > 1) {
+          event.preventDefault();
+          equalizeTransomsByRefs(multiSelection);
+        }
         if (event.key === "Delete" && event.shiftKey) {
           event.preventDefault();
           deleteSelectedTransom();
@@ -192,7 +202,17 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [deleteSelectedPanel, deleteSelectedTransom, redo, splitSelectedPanelVertical, splitSelectedTransomHorizontal, undo]);
+  }, [
+    deleteSelectedPanel,
+    deleteSelectedTransom,
+    equalizePanelsByRefs,
+    equalizeTransomsByRefs,
+    multiSelection,
+    redo,
+    splitSelectedPanelVertical,
+    splitSelectedTransomHorizontal,
+    undo
+  ]);
 
   async function handleSaveProject() {
     if (!window.desktopApi) {
@@ -324,6 +344,12 @@ function App() {
           <div className="cad-ops">
             <button className="tool-chip" onClick={equalizeSelectedRowPanels}>Satiri Esitle</button>
             <button className="tool-chip" onClick={equalizeAllTransomHeights}>Satirlari Esitle</button>
+            {multiSelection.length > 1 && (
+              <>
+                <button className="tool-chip" onClick={() => equalizePanelsByRefs(multiSelection)}>Secili Genislikleri Esitle</button>
+                <button className="tool-chip" onClick={() => equalizeTransomsByRefs(multiSelection)}>Secili Satirlari Dengele</button>
+              </>
+            )}
           </div>
         </section>
 
@@ -495,6 +521,7 @@ function App() {
               <strong>{toolMode}</strong>
               <span className="command-meta">Snap {snapMm} mm</span>
               <span className="command-meta">Zoom %{Math.round(zoom * 100)}</span>
+              <span className="command-meta">Shift+Surukle: Kutu Secim</span>
               {multiSelection.length > 0 && (
                 <>
                   <span className="command-meta">{multiSelection.length} panel secili</span>
@@ -502,6 +529,8 @@ function App() {
                   <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "turn-right")}>Toplu Sag</button>
                   <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "turn-left")}>Toplu Sol</button>
                   <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "sliding")}>Toplu Surme</button>
+                  <button className="tool-chip" onClick={() => equalizePanelsByRefs(multiSelection)}>E</button>
+                  <button className="tool-chip" onClick={() => equalizeTransomsByRefs(multiSelection)}>R</button>
                   <button className="tool-chip" onClick={() => setMultiSelection([])}>Secimi Temizle</button>
                 </>
               )}
@@ -585,6 +614,28 @@ function App() {
                     ))}
                   </div>
                 </>
+              )}
+
+              {railTab === "inspector" && multiSelection.length > 1 && (
+                <div className="focus-card bulk-card">
+                  <strong>Coklu Secim</strong>
+                  <span>{multiSelection.length} panel birlikte secili</span>
+                  <span>Komutlar: E = Genislik Esitle, R = Satir Dengele</span>
+                  <span>
+                    Toplam Cam Alani:{" "}
+                    {multiSelection
+                      .reduce((sum, item) => {
+                        const transom = design.transoms.find((row) => row.id === item.transomId);
+                        const panel = transom?.panels.find((cell) => cell.id === item.panelId);
+                        if (!transom || !panel) {
+                          return sum;
+                        }
+                        return sum + calculatePanelArea(panel.width, transom.height);
+                      }, 0)
+                      .toFixed(2)}{" "}
+                    m²
+                  </span>
+                </div>
               )}
 
               {railTab === "inspector" && !selectedPanel && (

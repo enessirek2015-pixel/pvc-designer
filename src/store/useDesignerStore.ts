@@ -60,6 +60,8 @@ interface DesignerState {
   equalizeSelectedRowPanels: () => void;
   equalizeAllTransomHeights: () => void;
   applyOpeningTypeToPanels: (panels: PanelRef[], openingType: OpeningType) => void;
+  equalizePanelsByRefs: (panels: PanelRef[]) => void;
+  equalizeTransomsByRefs: (panels: PanelRef[]) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -528,6 +530,57 @@ export const useDesignerStore = create<DesignerState>((set) => ({
             keySet.has(`${transom.id}:${panel.id}`) ? { ...panel, openingType } : panel
           )
         }));
+      })
+    ),
+
+  equalizePanelsByRefs: (panels) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const groups = new Map<string, Set<string>>();
+        panels.forEach((item) => {
+          if (!groups.has(item.transomId)) {
+            groups.set(item.transomId, new Set());
+          }
+          groups.get(item.transomId)?.add(item.panelId);
+        });
+
+        draft.design.transoms = draft.design.transoms.map((transom) => {
+          const selectedPanelIds = groups.get(transom.id);
+          if (!selectedPanelIds || selectedPanelIds.size < 2) {
+            return transom;
+          }
+
+          const selectedPanels = transom.panels.filter((panel) => selectedPanelIds.has(panel.id));
+          const selectedTotal = selectedPanels.reduce((sum, panel) => sum + panel.width, 0);
+          const nextSelectedPanels = normalizePanelWidths(selectedPanels, selectedTotal);
+          const widthMap = new Map(nextSelectedPanels.map((panel) => [panel.id, panel.width]));
+
+          return {
+            ...transom,
+            panels: transom.panels.map((panel) =>
+              widthMap.has(panel.id) ? { ...panel, width: widthMap.get(panel.id) ?? panel.width } : panel
+            )
+          };
+        });
+      })
+    ),
+
+  equalizeTransomsByRefs: (panels) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const transomIds = [...new Set(panels.map((item) => item.transomId))];
+        if (transomIds.length < 2) {
+          return;
+        }
+
+        const selectedTransoms = draft.design.transoms.filter((transom) => transomIds.includes(transom.id));
+        const selectedTotalHeight = selectedTransoms.reduce((sum, transom) => sum + transom.height, 0);
+        const balancedHeights = normalizeTransomHeights(selectedTransoms, selectedTotalHeight);
+        const heightMap = new Map(balancedHeights.map((transom) => [transom.id, transom.height]));
+
+        draft.design.transoms = draft.design.transoms.map((transom) =>
+          heightMap.has(transom.id) ? { ...transom, height: heightMap.get(transom.id) ?? transom.height } : transom
+        );
       })
     ),
 
