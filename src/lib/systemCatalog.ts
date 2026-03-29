@@ -1,0 +1,151 @@
+import type { GlassType, HardwareQuality, ProfileSeries } from "../types/pvc";
+
+export interface ProfileSeriesSpec {
+  id: ProfileSeries;
+  label: string;
+  depthMm: number;
+  recommendedFrameMm: number;
+  recommendedMullionMm: number;
+  maxOperableWidthMm: number;
+  maxOperableHeightMm: number;
+  maxOperableAreaM2: number;
+  frameCutLossMm: number;
+  mullionCutLossMm: number;
+  transomCutLossMm: number;
+  sashReductionMm: number;
+  glassReductionMm: number;
+  beadAllowanceMm: number;
+}
+
+export interface GlassSpec {
+  id: GlassType;
+  label: string;
+  buildUp: string;
+  weightKgM2: number;
+  thermalClass: "basic" | "good" | "high";
+}
+
+export interface HardwareSpec {
+  id: HardwareQuality;
+  label: string;
+  maxSashWeightKg: number;
+  hingeCount: number;
+}
+
+export const profileSeriesCatalog: Record<ProfileSeries, ProfileSeriesSpec> = {
+  "standard-58": {
+    id: "standard-58",
+    label: "Standard 58",
+    depthMm: 58,
+    recommendedFrameMm: 58,
+    recommendedMullionMm: 58,
+    maxOperableWidthMm: 900,
+    maxOperableHeightMm: 1600,
+    maxOperableAreaM2: 1.35,
+    frameCutLossMm: 10,
+    mullionCutLossMm: 6,
+    transomCutLossMm: 12,
+    sashReductionMm: 42,
+    glassReductionMm: 88,
+    beadAllowanceMm: 14
+  },
+  "comfort-70": {
+    id: "comfort-70",
+    label: "Comfort 70",
+    depthMm: 70,
+    recommendedFrameMm: 70,
+    recommendedMullionMm: 70,
+    maxOperableWidthMm: 1100,
+    maxOperableHeightMm: 2100,
+    maxOperableAreaM2: 1.8,
+    frameCutLossMm: 12,
+    mullionCutLossMm: 8,
+    transomCutLossMm: 14,
+    sashReductionMm: 50,
+    glassReductionMm: 96,
+    beadAllowanceMm: 16
+  },
+  "premium-76": {
+    id: "premium-76",
+    label: "Premium 76",
+    depthMm: 76,
+    recommendedFrameMm: 76,
+    recommendedMullionMm: 76,
+    maxOperableWidthMm: 1200,
+    maxOperableHeightMm: 2300,
+    maxOperableAreaM2: 2.1,
+    frameCutLossMm: 12,
+    mullionCutLossMm: 8,
+    transomCutLossMm: 16,
+    sashReductionMm: 54,
+    glassReductionMm: 104,
+    beadAllowanceMm: 18
+  },
+  "elite-82": {
+    id: "elite-82",
+    label: "Elite 82",
+    depthMm: 82,
+    recommendedFrameMm: 82,
+    recommendedMullionMm: 82,
+    maxOperableWidthMm: 1300,
+    maxOperableHeightMm: 2400,
+    maxOperableAreaM2: 2.35,
+    frameCutLossMm: 14,
+    mullionCutLossMm: 10,
+    transomCutLossMm: 18,
+    sashReductionMm: 58,
+    glassReductionMm: 112,
+    beadAllowanceMm: 18
+  },
+  "veka-softline": {
+    id: "veka-softline",
+    label: "VEKA Softline",
+    depthMm: 82,
+    recommendedFrameMm: 82,
+    recommendedMullionMm: 76,
+    maxOperableWidthMm: 1250,
+    maxOperableHeightMm: 2400,
+    maxOperableAreaM2: 2.3,
+    frameCutLossMm: 14,
+    mullionCutLossMm: 10,
+    transomCutLossMm: 18,
+    sashReductionMm: 58,
+    glassReductionMm: 110,
+    beadAllowanceMm: 18
+  },
+  "rehau-synego": {
+    id: "rehau-synego",
+    label: "REHAU Synego",
+    depthMm: 80,
+    recommendedFrameMm: 80,
+    recommendedMullionMm: 76,
+    maxOperableWidthMm: 1250,
+    maxOperableHeightMm: 2350,
+    maxOperableAreaM2: 2.25,
+    frameCutLossMm: 14,
+    mullionCutLossMm: 10,
+    transomCutLossMm: 18,
+    sashReductionMm: 56,
+    glassReductionMm: 108,
+    beadAllowanceMm: 18
+  }
+};
+
+export const glassCatalog: Record<GlassType, GlassSpec> = {
+  "single-clear": { id: "single-clear", label: "Tek Cam Clear", buildUp: "4 mm", weightKgM2: 10, thermalClass: "basic" },
+  "double-clear": { id: "double-clear", label: "Cift Cam Clear", buildUp: "4+12+4", weightKgM2: 20, thermalClass: "good" },
+  "triple-clear": { id: "triple-clear", label: "Uc Cam Clear", buildUp: "4+12+4+12+4", weightKgM2: 30, thermalClass: "high" },
+  "double-low-e": { id: "double-low-e", label: "Cift Cam Low-E", buildUp: "4+16+4 Low-E", weightKgM2: 20, thermalClass: "high" },
+  "triple-low-e": { id: "triple-low-e", label: "Uc Cam Low-E", buildUp: "4+12+4+12+4 Low-E", weightKgM2: 30, thermalClass: "high" },
+  "tempered-clear": { id: "tempered-clear", label: "Temperli", buildUp: "6 mm temperli", weightKgM2: 15, thermalClass: "basic" },
+  "laminated-clear": { id: "laminated-clear", label: "Lamine", buildUp: "4+4 lamine", weightKgM2: 20, thermalClass: "good" },
+  "reflective-blue": { id: "reflective-blue", label: "Reflekte Mavi", buildUp: "6 mm reflekte", weightKgM2: 15, thermalClass: "good" },
+  "reflective-smoke": { id: "reflective-smoke", label: "Reflekte Fume", buildUp: "6 mm reflekte", weightKgM2: 15, thermalClass: "good" },
+  frosted: { id: "frosted", label: "Buzlu", buildUp: "4+12+4 satin", weightKgM2: 20, thermalClass: "good" }
+};
+
+export const hardwareCatalog: Record<HardwareQuality, HardwareSpec> = {
+  economy: { id: "economy", label: "Ekonomi", maxSashWeightKg: 80, hingeCount: 2 },
+  standard: { id: "standard", label: "Standart", maxSashWeightKg: 110, hingeCount: 2 },
+  premium: { id: "premium", label: "Premium", maxSashWeightKg: 130, hingeCount: 3 }
+};

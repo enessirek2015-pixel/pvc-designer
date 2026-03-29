@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { designTemplates } from "./data/sampleDesign";
+import { buildDesignHealth, buildDesignSnapshot, buildPanelEngineering } from "./lib/designEngine";
+import { buildManufacturingHtml, buildManufacturingReport } from "./lib/manufacturingEngine";
+import type { DesignDiagnostic } from "./lib/designEngine";
+import { buildProfileLayout } from "./lib/profileLayout";
+import { glassCatalog, hardwareCatalog, profileSeriesCatalog } from "./lib/systemCatalog";
 import { useDesignerStore } from "./store/useDesignerStore";
 import type { PanelRef } from "./store/useDesignerStore";
 import type {
@@ -70,6 +75,10 @@ type ToolMode =
   | "add-bottom"
   | "delete-panel";
 
+type CommandTarget =
+  | { type: "panel-width"; transomId: string; panelId: string; label: string }
+  | { type: "transom-height"; transomId: string; label: string };
+
 function App() {
   const [viewMode, setViewMode] = useState<"studio" | "technical" | "presentation">("studio");
   const [railTab, setRailTab] = useState<"inspector" | "materials" | "bom">("inspector");
@@ -79,6 +88,8 @@ function App() {
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapMm, setSnapMm] = useState(10);
   const [multiSelection, setMultiSelection] = useState<PanelRef[]>([]);
+  const [commandTarget, setCommandTarget] = useState<CommandTarget | null>(null);
+  const [commandValue, setCommandValue] = useState("");
   const panRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const {
     design,
@@ -90,6 +101,7 @@ function App() {
     setTotalHeight,
     setOuterFrameThickness,
     setMullionThickness,
+    selectPanel,
     setDesignName,
     loadTemplate,
     replaceDesign,
@@ -98,6 +110,8 @@ function App() {
     setProfileSeries,
     setHardwareQuality,
     setCustomerField,
+    setPanelWidthById,
+    setTransomHeightById,
     setSelectedOpeningType,
     setSelectedPanelWidth,
     setSelectedTransomHeight,
@@ -131,13 +145,234 @@ function App() {
     return { transom, panel };
   }, [design, selected]);
 
-  const totalPanelCount = design.transoms.reduce((sum, transom) => sum + transom.panels.length, 0);
-  const openingCount = design.transoms.reduce(
-    (sum, transom) => sum + transom.panels.filter((panel) => panel.openingType !== "fixed").length,
-    0
-  );
-  const fixedCount = totalPanelCount - openingCount;
-  const bom = useMemo(() => buildBom(design), [design]);
+  const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
+  const glassSpec = glassCatalog[design.materials.glassType];
+  const hardwareSpec = hardwareCatalog[design.materials.hardwareQuality];
+  const nextProfileSeries = getNextProfileSeries(design.materials.profileSeries);
+  const nextHardwareQuality = getNextHardwareQuality(design.materials.hardwareQuality);
+  const designSnapshot = useMemo(() => buildDesignSnapshot(design), [design]);
+  const designHealth = useMemo(() => buildDesignHealth(design), [design]);
+  const selectedPanelEngineering = useMemo(() => {
+    if (!selectedPanel) {
+      return null;
+    }
+
+    return buildPanelEngineering(design, selectedPanel.panel.width, selectedPanel.transom.height);
+  }, [design, selectedPanel]);
+  const totalPanelCount = designSnapshot.panelCount;
+  const openingCount = designSnapshot.openingCount;
+  const fixedCount = designSnapshot.fixedCount;
+  const bom = useMemo(() => buildManufacturingReport(design), [design]);
+
+  useEffect(() => {
+    if (!selectedPanel || commandTarget) {
+      return;
+    }
+
+    setCommandTarget({
+      type: "panel-width",
+      transomId: selectedPanel.transom.id,
+      panelId: selectedPanel.panel.id,
+      label: `Panel Genisligi - ${selectedPanel.panel.width} mm`
+    });
+  }, [commandTarget, selectedPanel]);
+
+  useEffect(() => {
+    if (!commandTarget) {
+      return;
+    }
+
+    if (commandTarget.type === "panel-width") {
+      const transom = design.transoms.find((item) => item.id === commandTarget.transomId);
+      const panel = transom?.panels.find((item) => item.id === commandTarget.panelId);
+      if (!panel) {
+        return;
+      }
+
+      const nextLabel = `${commandTarget.label.startsWith("Dikey Kayit") ? "Dikey Kayit" : "Panel Genisligi"} - ${panel.width} mm`;
+      if (commandTarget.label !== nextLabel) {
+        setCommandTarget({ ...commandTarget, label: nextLabel });
+      }
+      return;
+    }
+
+    const transom = design.transoms.find((item) => item.id === commandTarget.transomId);
+    if (!transom) {
+      return;
+    }
+
+    const nextLabel = `${commandTarget.label.startsWith("Yatay Kayit") ? "Yatay Kayit" : "Satir Yuksekligi"} - ${transom.height} mm`;
+    if (commandTarget.label !== nextLabel) {
+      setCommandTarget({ ...commandTarget, label: nextLabel });
+    }
+  }, [commandTarget, design]);
+
+  function applyCommandValue() {
+    const parsedValue = Number(commandValue.replace(",", "."));
+    if (!commandTarget || !Number.isFinite(parsedValue) || parsedValue <= 0) {
+      return;
+    }
+
+    const nextValue = Math.round(parsedValue);
+    if (commandTarget.type === "panel-width") {
+      setPanelWidthById(commandTarget.transomId, commandTarget.panelId, nextValue);
+      setCommandTarget({
+        ...commandTarget,
+        label: `Panel Genisligi - ${nextValue} mm`
+      });
+    } else {
+      setTransomHeightById(commandTarget.transomId, nextValue);
+      setCommandTarget({
+        ...commandTarget,
+        label: `Satir Yuksekligi - ${nextValue} mm`
+      });
+    }
+
+    setCommandValue("");
+  }
+
+  function focusPanelRef(ref: PanelRef) {
+    const transom = design.transoms.find((item) => item.id === ref.transomId);
+    const panel = transom?.panels.find((item) => item.id === ref.panelId);
+    if (!transom || !panel) {
+      return;
+    }
+
+    selectPanel(ref.transomId, ref.panelId);
+    setMultiSelection([ref]);
+    setRailTab("inspector");
+    setCommandTarget({
+      type: "panel-width",
+      transomId: ref.transomId,
+      panelId: ref.panelId,
+      label: `Panel Genisligi - ${panel.width} mm`
+    });
+  }
+
+  function focusTransom(transomId: string) {
+    const transom = design.transoms.find((item) => item.id === transomId);
+    const panel = transom?.panels[0];
+    if (!transom || !panel) {
+      return;
+    }
+
+    focusPanelRef({ transomId, panelId: panel.id });
+    setCommandTarget({
+      type: "transom-height",
+      transomId,
+      label: `Satir Yuksekligi - ${transom.height} mm`
+    });
+  }
+
+  function getDiagnosticActions(diagnostic: DesignDiagnostic) {
+    const actions: Array<{ label: string; onClick: () => void; subtle?: boolean }> = [];
+
+    if (diagnostic.panelId && diagnostic.transomId) {
+      actions.push({
+        label: "Panele Git",
+        onClick: () => focusPanelRef({ transomId: diagnostic.transomId!, panelId: diagnostic.panelId! }),
+        subtle: true
+      });
+    } else if (diagnostic.transomId) {
+      actions.push({
+        label: "Satira Git",
+        onClick: () => focusTransom(diagnostic.transomId!),
+        subtle: true
+      });
+    }
+
+    if (
+      diagnostic.id === "outer-frame-range" ||
+      diagnostic.id === "mullion-range" ||
+      diagnostic.id === "frame-series-mismatch" ||
+      diagnostic.id === "mullion-series-mismatch"
+    ) {
+      actions.push({
+        label: "Seriyle Senkronla",
+        onClick: () => {
+          setOuterFrameThickness(profileSpec.recommendedFrameMm);
+          setMullionThickness(profileSpec.recommendedMullionMm);
+        }
+      });
+    }
+
+    if (
+      diagnostic.id === "total-height-mismatch" ||
+      diagnostic.id.startsWith("row-min-height-") ||
+      diagnostic.id.startsWith("row-max-height-")
+    ) {
+      actions.push({
+        label: "Satirlari Dengele",
+        onClick: equalizeAllTransomHeights
+      });
+    }
+
+    if (diagnostic.id.startsWith("row-width-") && diagnostic.transomId) {
+      actions.push({
+        label: "Satiri Esitle",
+        onClick: () => {
+          focusTransom(diagnostic.transomId!);
+          equalizeSelectedRowPanels();
+        }
+      });
+    }
+
+    if (
+      nextProfileSeries &&
+      (diagnostic.id.startsWith("panel-series-") ||
+        diagnostic.id.startsWith("panel-area-limit-") ||
+        diagnostic.id === "frame-series-mismatch" ||
+        diagnostic.id === "mullion-series-mismatch")
+    ) {
+      actions.push({
+        label: "Seriyi Yukselt",
+        onClick: () => setProfileSeries(nextProfileSeries)
+      });
+    }
+
+    if (nextHardwareQuality && diagnostic.id.startsWith("panel-weight-limit-")) {
+      actions.push({
+        label: "Donanimi Guclendir",
+        onClick: () => setHardwareQuality(nextHardwareQuality)
+      });
+    }
+
+    if (
+      diagnostic.panelId &&
+      diagnostic.transomId &&
+      (diagnostic.id.startsWith("panel-operable-max-") ||
+        diagnostic.id.startsWith("panel-series-width-") ||
+        diagnostic.id.startsWith("panel-area-limit-") ||
+        diagnostic.id.startsWith("panel-weight-limit-"))
+    ) {
+      actions.push({
+        label: "Kanadi Bol",
+        onClick: () => {
+          focusPanelRef({ transomId: diagnostic.transomId!, panelId: diagnostic.panelId! });
+          splitSelectedPanelVertical();
+        }
+      });
+    }
+
+    if (
+      diagnostic.panelId &&
+      diagnostic.transomId &&
+      (diagnostic.id.startsWith("panel-operable-width-") ||
+        diagnostic.id.startsWith("panel-operable-height-") ||
+        diagnostic.id.startsWith("panel-min-width-") ||
+        diagnostic.id.startsWith("panel-weight-limit-"))
+    ) {
+      actions.push({
+        label: "Sabit Yap",
+        onClick: () => {
+          focusPanelRef({ transomId: diagnostic.transomId!, panelId: diagnostic.panelId! });
+          setSelectedOpeningType("fixed");
+        }
+      });
+    }
+
+    return actions.slice(0, 3);
+  }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -166,6 +401,9 @@ function App() {
         setZoom((value) => Math.max(0.4, Number((value - 0.1).toFixed(2))));
       }
       if (!event.ctrlKey && !event.altKey) {
+        if (event.key === "Escape") {
+          setCommandValue("");
+        }
         if (event.key.toLowerCase() === "v") {
           event.preventDefault();
           splitSelectedPanelVertical();
@@ -240,7 +478,7 @@ function App() {
     if (!window.desktopApi) {
       return;
     }
-    await window.desktopApi.printBom(buildBomHtml(design, bom));
+    await window.desktopApi.printBom(buildManufacturingHtml(design, bom));
   }
 
   return (
@@ -479,6 +717,8 @@ function App() {
               viewMode={viewMode}
               toolMode={toolMode}
               onToolModeChange={setToolMode}
+              commandTarget={commandTarget}
+              onCommandTargetChange={setCommandTarget}
               onSplitVertical={splitSelectedPanelVertical}
               onSplitHorizontal={splitSelectedTransomHorizontal}
               onDeletePanel={deleteSelectedPanel}
@@ -522,6 +762,28 @@ function App() {
               <span className="command-meta">Snap {snapMm} mm</span>
               <span className="command-meta">Zoom %{Math.round(zoom * 100)}</span>
               <span className="command-meta">Shift+Surukle: Kutu Secim</span>
+              <span className={`health-chip ${designHealth.status}`}>
+                Kontrol: {getHealthLabel(designHealth.status)} {designHealth.score}/100
+              </span>
+              {commandTarget && (
+                <div className="command-input">
+                  <span className="command-meta">{commandTarget.label}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={commandValue}
+                    placeholder="mm yaz"
+                    onChange={(event) => setCommandValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        applyCommandValue();
+                      }
+                    }}
+                  />
+                  <button className="tool-chip" onClick={applyCommandValue}>Uygula</button>
+                </div>
+              )}
               {multiSelection.length > 0 && (
                 <>
                   <span className="command-meta">{multiSelection.length} panel secili</span>
@@ -562,6 +824,97 @@ function App() {
                     </span>
                     <span>Cam Alani: {calculatePanelArea(selectedPanel.panel.width, selectedPanel.transom.height).toFixed(2)} m²</span>
                   </div>
+
+                  {selectedPanelEngineering && (
+                    <div className="tech-card">
+                      <div className="tech-card-row">
+                        <span>Net Kanat Kesim</span>
+                        <strong>
+                          {selectedPanelEngineering.approxSashWidthMm} x {selectedPanelEngineering.approxSashHeightMm} mm
+                        </strong>
+                      </div>
+                      <div className="tech-card-row">
+                        <span>Yaklasik Cam Kesim</span>
+                        <strong>
+                          {selectedPanelEngineering.approxGlassWidthMm} x {selectedPanelEngineering.approxGlassHeightMm} mm
+                        </strong>
+                      </div>
+                      <div className="tech-card-row">
+                        <span>Cita Kesim Referansi</span>
+                        <strong>
+                          {selectedPanelEngineering.approxGlassWidthMm + profileSpec.beadAllowanceMm} / {selectedPanelEngineering.approxGlassHeightMm + profileSpec.beadAllowanceMm} mm
+                        </strong>
+                      </div>
+                      <div className="tech-card-row">
+                        <span>Tahmini Kanat Agirligi</span>
+                        <strong>{selectedPanelEngineering.approxSashWeightKg.toFixed(1)} kg</strong>
+                      </div>
+                      <div className="tech-card-row">
+                        <span>Seri / Donanim Durumu</span>
+                        <strong>
+                          {selectedPanelEngineering.seriesLimitOk && selectedPanelEngineering.weightLimitOk
+                            ? "Uygun"
+                            : "Kontrol Gerekli"}
+                        </strong>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedPanelEngineering && (
+                    <div className="smart-actions-card">
+                      <div className="section-title-row tight">
+                        <div>
+                          <p className="eyebrow">Akilli Hamleler</p>
+                          <h3>Tek Tik Duzeltmeler</h3>
+                        </div>
+                      </div>
+                      <div className="smart-actions-grid">
+                        {nextProfileSeries &&
+                          (!selectedPanelEngineering.seriesLimitOk ||
+                            Math.abs(design.outerFrameThickness - profileSpec.recommendedFrameMm) > 12) && (
+                            <button className="smart-action-button" onClick={() => setProfileSeries(nextProfileSeries)}>
+                              Seriyi Yukselt
+                              <span>{profileSeriesCatalog[nextProfileSeries].label}</span>
+                            </button>
+                          )}
+                        {nextHardwareQuality && !selectedPanelEngineering.weightLimitOk && (
+                          <button className="smart-action-button" onClick={() => setHardwareQuality(nextHardwareQuality)}>
+                            Donanimi Guclendir
+                            <span>{hardwareCatalog[nextHardwareQuality].label}</span>
+                          </button>
+                        )}
+                        {(Math.abs(design.outerFrameThickness - profileSpec.recommendedFrameMm) > 12 ||
+                          Math.abs(design.mullionThickness - profileSpec.recommendedMullionMm) > 12) && (
+                          <button
+                            className="smart-action-button"
+                            onClick={() => {
+                              setOuterFrameThickness(profileSpec.recommendedFrameMm);
+                              setMullionThickness(profileSpec.recommendedMullionMm);
+                            }}
+                          >
+                            Profili Seriyle Senkronla
+                            <span>
+                              {profileSpec.recommendedFrameMm} / {profileSpec.recommendedMullionMm} mm
+                            </span>
+                          </button>
+                        )}
+                        {selectedPanel.panel.openingType !== "fixed" &&
+                          (selectedPanel.panel.width > profileSpec.maxOperableWidthMm ||
+                            selectedPanelEngineering.approxSashWeightKg > hardwareSpec.maxSashWeightKg) && (
+                            <button className="smart-action-button" onClick={splitSelectedPanelVertical}>
+                              Kanadi Bol
+                              <span>Genis paneli ikiye ayir</span>
+                            </button>
+                          )}
+                        {selectedPanel.panel.openingType !== "fixed" && !selectedPanelEngineering.weightLimitOk && (
+                          <button className="smart-action-button subtle" onClick={() => setSelectedOpeningType("fixed")}>
+                            Sabit Cama Donustur
+                            <span>Agirligi sifirla, riski azalt</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="stack-fields light">
                     <NumberField
@@ -671,6 +1024,25 @@ function App() {
                     <label>Adres<input value={design.customer.address} onChange={(event) => setCustomerField("address", event.target.value)} /></label>
                     <label>Notlar<input value={design.customer.notes} onChange={(event) => setCustomerField("notes", event.target.value)} /></label>
                   </div>
+                  <div className="material-insights">
+                    <div className="material-card">
+                      <strong>{profileSpec.label}</strong>
+                      <span>Derinlik: {profileSpec.depthMm} mm</span>
+                      <span>Onerilen Kasa: {profileSpec.recommendedFrameMm} mm</span>
+                      <span>Maks. Kanat: {profileSpec.maxOperableWidthMm} x {profileSpec.maxOperableHeightMm} mm</span>
+                    </div>
+                    <div className="material-card">
+                      <strong>{glassSpec.label}</strong>
+                      <span>Dizilim: {glassSpec.buildUp}</span>
+                      <span>Agirlik: {glassSpec.weightKgM2} kg/m²</span>
+                      <span>Sinif: {glassSpec.thermalClass}</span>
+                    </div>
+                    <div className="material-card">
+                      <strong>{hardwareSpec.label}</strong>
+                      <span>Maks. Kanat Agirligi: {hardwareSpec.maxSashWeightKg} kg</span>
+                      <span>Standart Menteşe: {hardwareSpec.hingeCount} adet</span>
+                    </div>
+                  </div>
                 </>
               )}
 
@@ -688,6 +1060,31 @@ function App() {
                     <BomRow label="Cam Alani" value={`${bom.glassAreaM2.toFixed(2)} m²`} />
                     <BomRow label="Menteşe" value={`${bom.hingeCount} Adet`} />
                     <BomRow label="Acilir Kanat" value={`${bom.openingPanels} Adet`} />
+                  </div>
+                  <div className="cutlist-table">
+                    <div className="cutlist-head">
+                      <span>Grup</span>
+                      <span>Parca</span>
+                      <span>Malzeme</span>
+                      <span>Adet</span>
+                      <span>Olcu / Not</span>
+                    </div>
+                    {bom.cutList.slice(0, 14).map((item) => (
+                      <div key={item.id} className="cutlist-row">
+                        <span>{getCutGroupLabel(item.group)}</span>
+                        <span>{item.part}</span>
+                        <span>{item.material}</span>
+                        <span>{item.quantity}</span>
+                        <span>
+                          {item.lengthMm
+                            ? `${item.lengthMm} mm`
+                            : item.widthMm && item.heightMm
+                              ? `${item.widthMm} x ${item.heightMm} mm`
+                              : "-"}
+                          {item.note ? ` • ${item.note}` : ""}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </>
               )}
@@ -707,9 +1104,64 @@ function App() {
                 <MetricCard label="Sabit Cam" value={String(fixedCount)} accent="slate" />
                 <MetricCard
                   label="Tahmini Profil"
-                  value={`${estimateProfileMeters(design)} m`}
+                  value={`${bom.profileLengthMeters.toFixed(2)} m`}
                   accent="green"
                 />
+              </div>
+            </section>
+
+            <section className="inspector-card">
+              <div className="section-title-row tight">
+                <div>
+                  <p className="eyebrow">Akilli Kontrol</p>
+                  <h3>Proje Sagligi</h3>
+                </div>
+                <div className={`health-badge ${designHealth.status}`}>
+                  {getHealthLabel(designHealth.status)}
+                </div>
+              </div>
+
+              <div className="health-overview">
+                <div className="health-score">
+                  <span>Skor</span>
+                  <strong>{designHealth.score}</strong>
+                </div>
+                <div className="health-stats">
+                  <span>{designHealth.errors} kritik</span>
+                  <span>{designHealth.warnings} uyari</span>
+                  <span>{designSnapshot.transomCount} satir</span>
+                  <span>Ort. panel {designSnapshot.averagePanelWidth} mm</span>
+                  <span>{profileSpec.label}</span>
+                  <span>{glassSpec.buildUp}</span>
+                </div>
+              </div>
+
+              <div className="diagnostic-list">
+                {designHealth.diagnostics.length === 0 ? (
+                  <div className="diagnostic-item healthy">
+                    <strong>Tasarim dengeli gorunuyor</strong>
+                    <span>Mevcut olculer temel kontrollerden gecti. Profil ve seri secimiyle devam edebilirsin.</span>
+                  </div>
+                ) : (
+                  designHealth.diagnostics.slice(0, 6).map((item) => (
+                    <div key={item.id} className={`diagnostic-item ${item.severity}`}>
+                      <strong>{item.title}</strong>
+                      <span>{item.detail}</span>
+                      {item.suggestion && <em>{item.suggestion}</em>}
+                      <div className="diagnostic-actions">
+                        {getDiagnosticActions(item).map((action) => (
+                          <button
+                            key={`${item.id}-${action.label}`}
+                            className={`diagnostic-action-button ${action.subtle ? "subtle" : ""}`}
+                            onClick={action.onClick}
+                          >
+                            {action.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           </aside>
@@ -807,6 +1259,72 @@ function BomRow({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function getHealthLabel(status: "healthy" | "warning" | "critical") {
+  if (status === "healthy") {
+    return "Temiz";
+  }
+  if (status === "warning") {
+    return "Dikkat";
+  }
+  return "Kritik";
+}
+
+function getCutGroupLabel(group: string) {
+  switch (group) {
+    case "outer-frame":
+      return "Kasa";
+    case "mullion":
+      return "Dikey";
+    case "transom":
+      return "Yatay";
+    case "sash":
+      return "Kanat";
+    case "bead":
+      return "Cita";
+    case "glass":
+      return "Cam";
+    case "hardware":
+      return "Aksesuar";
+    default:
+      return group;
+  }
+}
+
+function getNextProfileSeries(current: ProfileSeries) {
+  const index = profileSeriesOptions.findIndex((item) => item.value === current);
+  return index >= 0 && index < profileSeriesOptions.length - 1 ? profileSeriesOptions[index + 1].value : null;
+}
+
+function getNextHardwareQuality(current: HardwareQuality) {
+  const index = hardwareOptions.findIndex((item) => item.value === current);
+  return index >= 0 && index < hardwareOptions.length - 1 ? hardwareOptions[index + 1].value : null;
+}
+
+function getFramePalette(frameColor: FrameColor, presentation: boolean) {
+  const palettes: Record<FrameColor, { frameFill: string; frameStroke: string; sashFill: string; sashStroke: string; glassStroke: string }> = {
+    white: { frameFill: "#f7f8fa", frameStroke: "#b5bdc9", sashFill: "#eef2f7", sashStroke: "#b1bac7", glassStroke: "#87aeca" },
+    cream: { frameFill: "#efe6d2", frameStroke: "#bca98c", sashFill: "#e8dcc2", sashStroke: "#b59e7c", glassStroke: "#88aeca" },
+    anthracite: { frameFill: "#5f6670", frameStroke: "#3a4149", sashFill: "#737b86", sashStroke: "#4a515b", glassStroke: "#a3c1d9" },
+    black: { frameFill: "#2e3136", frameStroke: "#17191c", sashFill: "#3e434b", sashStroke: "#21252a", glassStroke: "#a3c1d9" },
+    "golden-oak": { frameFill: "#bf8852", frameStroke: "#8b5c30", sashFill: "#c89661", sashStroke: "#956135", glassStroke: "#89acca" },
+    walnut: { frameFill: "#8c654b", frameStroke: "#5f3f2d", sashFill: "#9a7459", sashStroke: "#694633", glassStroke: "#8caeca" },
+    mahogany: { frameFill: "#964d3f", frameStroke: "#663028", sashFill: "#a5594a", sashStroke: "#74362d", glassStroke: "#8caeca" },
+    silver: { frameFill: "#bec5ce", frameStroke: "#818b97", sashFill: "#d0d6de", sashStroke: "#9099a5", glassStroke: "#86a8c6" }
+  };
+
+  if (presentation) {
+    return {
+      frameFill: "#1c2b3e",
+      frameStroke: "#d2b377",
+      sashFill: "#22344b",
+      sashStroke: "#d2b377",
+      glassStroke: "#7ea6c7"
+    };
+  }
+
+  return palettes[frameColor];
 }
 
 function MiniTemplatePreview({ design }: { design: PvcDesign }) {
@@ -913,6 +1431,8 @@ function PvcCanvas({
   viewMode,
   toolMode,
   onToolModeChange,
+  commandTarget,
+  onCommandTargetChange,
   onSplitVertical,
   onSplitHorizontal,
   onDeletePanel,
@@ -934,6 +1454,8 @@ function PvcCanvas({
   viewMode: "studio" | "technical" | "presentation";
   toolMode: ToolMode;
   onToolModeChange: (mode: ToolMode) => void;
+  commandTarget: CommandTarget | null;
+  onCommandTargetChange: (target: CommandTarget | null) => void;
   onSplitVertical: () => void;
   onSplitHorizontal: () => void;
   onDeletePanel: () => void;
@@ -1170,35 +1692,100 @@ function PvcCanvas({
               selected?.transomId === transom.id && selected.panelId === panel.id;
             const panelKey = `${transom.id}:${panel.id}`;
             const isMultiSelected = multiSelectionKeys.has(panelKey);
+            const panelLayout = buildProfileLayout(design, panelX, panelY, widthPx, heightPx, scale, panel.openingType);
+            const palette = getFramePalette(design.materials.frameColor, isPresentation);
 
             currentX += widthPx;
 
             return (
               <g key={panel.id}>
+                {isTechnical ? (
+                  <rect
+                    x={panelX}
+                    y={panelY}
+                    width={widthPx}
+                    height={heightPx}
+                    rx="4"
+                    fill="url(#technicalGlassFill)"
+                    stroke={
+                      isSelected
+                        ? "#c18dfc"
+                        : isMultiSelected
+                          ? "#f6c84a"
+                          : "#69b95c"
+                    }
+                    strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
+                    className="clickable-panel"
+                  />
+                ) : (
+                  <>
+                    <rect
+                      x={panelLayout.frameRect.x}
+                      y={panelLayout.frameRect.y}
+                      width={panelLayout.frameRect.width}
+                      height={panelLayout.frameRect.height}
+                      rx="4"
+                      fill={palette.frameFill}
+                      stroke={palette.frameStroke}
+                      strokeWidth="1.6"
+                      filter="url(#panelShadow)"
+                    />
+                    {panelLayout.sashRect && (
+                      <rect
+                        x={panelLayout.sashRect.x}
+                        y={panelLayout.sashRect.y}
+                        width={panelLayout.sashRect.width}
+                        height={panelLayout.sashRect.height}
+                        rx="3"
+                        fill={palette.sashFill}
+                        stroke={palette.sashStroke}
+                        strokeWidth="1.2"
+                      />
+                    )}
+                    <rect
+                      x={panelLayout.glassRect.x}
+                      y={panelLayout.glassRect.y}
+                      width={panelLayout.glassRect.width}
+                      height={panelLayout.glassRect.height}
+                      rx="2"
+                      fill="url(#glassFill)"
+                      stroke={palette.glassStroke}
+                      strokeWidth="1"
+                    />
+                    <line
+                      x1={panelLayout.glassRect.x + 4}
+                      y1={panelLayout.glassRect.y + 6}
+                      x2={panelLayout.glassRect.x + panelLayout.glassRect.width - 4}
+                      y2={panelLayout.glassRect.y + 6}
+                      className="glass-sheen"
+                    />
+                    <rect
+                      x={panelX}
+                      y={panelY}
+                      width={widthPx}
+                      height={heightPx}
+                      rx="4"
+                      fill="transparent"
+                      stroke={
+                        isSelected
+                          ? "#f08a18"
+                          : isMultiSelected
+                            ? "#2d6cdf"
+                            : isPresentation
+                              ? "#d2b377"
+                              : "#748090"
+                      }
+                      strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
+                    />
+                  </>
+                )}
                 <rect
                   x={panelX}
                   y={panelY}
                   width={widthPx}
                   height={heightPx}
                   rx="4"
-                  fill={isTechnical ? "url(#technicalGlassFill)" : "url(#glassFill)"}
-                  stroke={
-                    isTechnical
-                      ? isSelected
-                        ? "#c18dfc"
-                        : isMultiSelected
-                          ? "#f6c84a"
-                          : "#69b95c"
-                      : isSelected
-                        ? "#f08a18"
-                        : isMultiSelected
-                          ? "#2d6cdf"
-                          : isPresentation
-                            ? "#d2b377"
-                            : "#748090"
-                  }
-                  strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
-                  filter={isTechnical ? undefined : "url(#panelShadow)"}
+                  fill="transparent"
                   className="clickable-panel"
                   onClick={(event) => {
                     if (event.shiftKey && toolMode === "select") {
@@ -1208,11 +1795,23 @@ function PvcCanvas({
                         : [...multiSelection, { transomId: transom.id, panelId: panel.id }];
                       onMultiSelectionChange(nextSelection);
                       selectPanel(transom.id, panel.id);
+                      onCommandTargetChange({
+                        type: "panel-width",
+                        transomId: transom.id,
+                        panelId: panel.id,
+                        label: `Panel Genisligi - ${panel.width} mm`
+                      });
                       return;
                     }
 
                     onMultiSelectionChange([{ transomId: transom.id, panelId: panel.id }]);
                     selectPanel(transom.id, panel.id);
+                    onCommandTargetChange({
+                      type: "panel-width",
+                      transomId: transom.id,
+                      panelId: panel.id,
+                      label: `Panel Genisligi - ${panel.width} mm`
+                    });
                     if (toolMode === "split-vertical") {
                       onSplitVertical();
                       onToolModeChange("select");
@@ -1298,8 +1897,35 @@ function PvcCanvas({
                       width={mullionSize}
                       height={heightPx}
                       fill={isTechnical ? "none" : isPresentation ? "#1f3047" : "#dbdfe6"}
-                      stroke={isTechnical ? "#69b95c" : isPresentation ? "#d2b377" : "#aab1bc"}
-                      strokeWidth="1"
+                      stroke={
+                        commandTarget?.type === "panel-width" &&
+                        commandTarget.transomId === transom.id &&
+                        commandTarget.panelId === panel.id
+                          ? "#ff8d2b"
+                          : isTechnical
+                            ? "#69b95c"
+                            : isPresentation
+                              ? "#d2b377"
+                              : "#aab1bc"
+                      }
+                      strokeWidth={
+                        commandTarget?.type === "panel-width" &&
+                        commandTarget.transomId === transom.id &&
+                        commandTarget.panelId === panel.id
+                          ? "3"
+                          : "1"
+                      }
+                      className="divider-select-zone"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        selectPanel(transom.id, panel.id);
+                        onCommandTargetChange({
+                          type: "panel-width",
+                          transomId: transom.id,
+                          panelId: panel.id,
+                          label: `Dikey Kayit - ${panel.width} mm`
+                        });
+                      }}
                     />
                     <rect
                       x={panelX + widthPx - 10}
@@ -1311,6 +1937,12 @@ function PvcCanvas({
                       onMouseDown={(event) => {
                         event.preventDefault();
                         selectPanel(transom.id, panel.id);
+                        onCommandTargetChange({
+                          type: "panel-width",
+                          transomId: transom.id,
+                          panelId: panel.id,
+                          label: `Dikey Kayit - ${panel.width} mm`
+                        });
                         setDragState({
                           type: "vertical",
                           transomId: transom.id,
@@ -1330,14 +1962,35 @@ function PvcCanvas({
 
         {transomOffsets.slice(1).map((offsetY) => (
           <g key={offsetY}>
+            {(() => {
+              const transomIndex = transomOffsets.findIndex((item) => item === offsetY);
+              const aboveTransom = design.transoms[transomIndex];
+              const isActiveDivider =
+                commandTarget?.type === "transom-height" && commandTarget.transomId === aboveTransom?.id;
+
+              return (
+                <>
             <rect
               x={outerX + frameInset}
               y={offsetY - mullionSize / 2}
               width={outerW - frameInset * 2}
               height={mullionSize}
               fill={isTechnical ? "none" : isPresentation ? "#1f3047" : "#dbdfe6"}
-              stroke={isTechnical ? "#69b95c" : isPresentation ? "#d2b377" : "#aab1bc"}
-              strokeWidth="1"
+              stroke={isActiveDivider ? "#ff8d2b" : isTechnical ? "#69b95c" : isPresentation ? "#d2b377" : "#aab1bc"}
+              strokeWidth={isActiveDivider ? "3" : "1"}
+              className="divider-select-zone"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!aboveTransom) {
+                  return;
+                }
+                selectPanel(aboveTransom.id, aboveTransom.panels[0].id);
+                onCommandTargetChange({
+                  type: "transom-height",
+                  transomId: aboveTransom.id,
+                  label: `Yatay Kayit - ${aboveTransom.height} mm`
+                });
+              }}
             />
             <rect
               x={outerX + outerW / 2 - 40}
@@ -1355,6 +2008,11 @@ function PvcCanvas({
 
                 event.preventDefault();
                 selectPanel(aboveTransom.id, aboveTransom.panels[0].id);
+                onCommandTargetChange({
+                  type: "transom-height",
+                  transomId: aboveTransom.id,
+                  label: `Yatay Kayit - ${aboveTransom.height} mm`
+                });
                 setDragState({
                   type: "horizontal",
                   transomId: aboveTransom.id,
@@ -1364,6 +2022,9 @@ function PvcCanvas({
                 });
               }}
             />
+                </>
+              );
+            })()}
           </g>
         ))}
 
