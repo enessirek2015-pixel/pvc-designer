@@ -64,6 +64,16 @@ export interface TransomDefinition {
   panels: PanelDefinition[];
 }
 
+export type GuideOrientation = "vertical" | "horizontal";
+
+export interface ReferenceGuide {
+  id: string;
+  orientation: GuideOrientation;
+  positionMm: number;
+  locked: boolean;
+  label: string;
+}
+
 export interface PvcDesign {
   id: string;
   name: string;
@@ -72,6 +82,7 @@ export interface PvcDesign {
   outerFrameThickness: number;
   mullionThickness: number;
   transoms: TransomDefinition[];
+  guides: ReferenceGuide[];
   materials: DesignMaterials;
   customer: CustomerInfo;
 }

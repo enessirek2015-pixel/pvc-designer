@@ -18,6 +18,10 @@ function baseCustomer(): PvcDesign["customer"] {
   };
 }
 
+function baseGuides(): PvcDesign["guides"] {
+  return [];
+}
+
 export const sampleDesign: PvcDesign = {
   id: "design-001",
   name: "Salon Penceresi",
@@ -25,6 +29,7 @@ export const sampleDesign: PvcDesign = {
   totalHeight: 1700,
   outerFrameThickness: 70,
   mullionThickness: 60,
+  guides: baseGuides(),
   materials: baseMaterials(),
   customer: baseCustomer(),
   transoms: [
@@ -58,6 +63,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1400,
     outerFrameThickness: 70,
     mullionThickness: 60,
+    guides: baseGuides(),
     materials: baseMaterials(),
     customer: baseCustomer(),
     transoms: [
@@ -75,6 +81,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1400,
     outerFrameThickness: 70,
     mullionThickness: 60,
+    guides: baseGuides(),
     materials: baseMaterials(),
     customer: baseCustomer(),
     transoms: [
@@ -95,6 +102,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 2100,
     outerFrameThickness: 80,
     mullionThickness: 60,
+    guides: baseGuides(),
     materials: { ...baseMaterials(), frameColor: "anthracite", glassType: "triple-low-e" },
     customer: baseCustomer(),
     transoms: [
@@ -116,6 +124,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1200,
     outerFrameThickness: 70,
     mullionThickness: 55,
+    guides: baseGuides(),
     materials: { ...baseMaterials(), profileSeries: "premium-76" },
     customer: baseCustomer(),
     transoms: [
@@ -137,6 +146,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1700,
     outerFrameThickness: 70,
     mullionThickness: 60,
+    guides: baseGuides(),
     materials: { ...baseMaterials(), glassType: "double-low-e" },
     customer: baseCustomer(),
     transoms: [
@@ -167,6 +177,7 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 2200,
     outerFrameThickness: 70,
     mullionThickness: 60,
+    guides: baseGuides(),
     materials: { ...baseMaterials(), frameColor: "golden-oak", hardwareQuality: "premium" },
     customer: baseCustomer(),
     transoms: [

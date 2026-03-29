@@ -1,13 +1,16 @@
 import { create } from "zustand";
+import { panelLibraryModules, rowLibraryModules } from "../data/moduleLibrary";
 import { designTemplates, sampleDesign } from "../data/sampleDesign";
 import type {
   FrameColor,
   GlassType,
+  GuideOrientation,
   HardwareQuality,
   OpeningType,
   PanelDefinition,
   ProfileSeries,
   PvcDesign,
+  ReferenceGuide,
   TransomDefinition
 } from "../types/pvc";
 
@@ -62,15 +65,26 @@ interface DesignerState {
   applyOpeningTypeToPanels: (panels: PanelRef[], openingType: OpeningType) => void;
   equalizePanelsByRefs: (panels: PanelRef[]) => void;
   equalizeTransomsByRefs: (panels: PanelRef[]) => void;
+  mirrorSelectedRow: () => void;
+  arraySelectedPanel: (count: number) => void;
+  applyPanelLibraryModule: (moduleId: string) => void;
+  applyRowLibraryModule: (moduleId: string) => void;
+  addReferenceGuide: (orientation: GuideOrientation, positionMm: number, label?: string) => void;
+  setGuidePosition: (guideId: string, positionMm: number) => void;
+  toggleGuideLock: (guideId: string) => void;
+  renameGuide: (guideId: string, label: string) => void;
+  removeGuide: (guideId: string) => void;
   undo: () => void;
   redo: () => void;
 }
 
 function cloneDesign(design: PvcDesign): PvcDesign {
+  const guidesSource = (design as PvcDesign & { guides?: ReferenceGuide[] }).guides ?? [];
   return {
     ...design,
     materials: { ...design.materials },
     customer: { ...design.customer },
+    guides: guidesSource.map((guide) => ({ ...guide })),
     transoms: design.transoms.map((transom) => ({
       ...transom,
       panels: transom.panels.map((panel) => ({ ...panel }))
@@ -137,6 +151,16 @@ function clampPositive(value: number, fallback: number) {
     return fallback;
   }
   return Math.round(value);
+}
+
+function mirrorOpeningType(openingType: OpeningType): OpeningType {
+  if (openingType === "turn-right") {
+    return "turn-left";
+  }
+  if (openingType === "turn-left") {
+    return "turn-right";
+  }
+  return openingType;
 }
 
 function initialSelected(design: PvcDesign): SelectionState | null {
@@ -581,6 +605,195 @@ export const useDesignerStore = create<DesignerState>((set) => ({
         draft.design.transoms = draft.design.transoms.map((transom) =>
           heightMap.has(transom.id) ? { ...transom, height: heightMap.get(transom.id) ?? transom.height } : transom
         );
+      })
+    ),
+
+  mirrorSelectedRow: () =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (!draft.selected) {
+          return;
+        }
+
+        const transom = draft.design.transoms.find((item) => item.id === draft.selected?.transomId);
+        if (!transom || transom.panels.length < 2) {
+          return;
+        }
+
+        const selectedIndex = transom.panels.findIndex((item) => item.id === draft.selected?.panelId);
+        if (selectedIndex === -1) {
+          return;
+        }
+
+        const nextPanels = [...transom.panels]
+          .reverse()
+          .map((panel, index) => ({
+            ...panel,
+            id: `${panel.id}-mirror-${index}`,
+            openingType: mirrorOpeningType(panel.openingType)
+          }));
+
+        transom.panels = nextPanels;
+        draft.selected = {
+          transomId: transom.id,
+          panelId: nextPanels[Math.max(0, nextPanels.length - 1 - selectedIndex)].id
+        };
+      })
+    ),
+
+  arraySelectedPanel: (count) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (!draft.selected) {
+          return;
+        }
+
+        const nextCount = Math.max(2, Math.min(8, Math.round(count)));
+        const transom = draft.design.transoms.find((item) => item.id === draft.selected?.transomId);
+        if (!transom) {
+          return;
+        }
+
+        const panelIndex = transom.panels.findIndex((item) => item.id === draft.selected?.panelId);
+        if (panelIndex === -1) {
+          return;
+        }
+
+        const panel = transom.panels[panelIndex];
+        if (panel.width / nextCount < 100) {
+          return;
+        }
+
+        let remaining = panel.width;
+        const newPanels = Array.from({ length: nextCount }, (_, index) => {
+          const width = index === nextCount - 1 ? remaining : Math.floor(panel.width / nextCount);
+          remaining -= width;
+          return {
+            ...panel,
+            id: `${panel.id}-array-${index + 1}`,
+            width,
+            label: index === Math.floor(nextCount / 2) ? panel.label : "Sabit",
+            openingType: index === Math.floor(nextCount / 2) ? panel.openingType : "fixed"
+          };
+        });
+
+        transom.panels.splice(panelIndex, 1, ...newPanels);
+        draft.selected = { transomId: transom.id, panelId: newPanels[0].id };
+      })
+    ),
+
+  applyPanelLibraryModule: (moduleId) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (!draft.selected) {
+          return;
+        }
+
+        const module = panelLibraryModules.find((item) => item.id === moduleId);
+        if (!module) {
+          return;
+        }
+
+        draft.design.transoms = draft.design.transoms.map((transom) => ({
+          ...transom,
+          panels: transom.panels.map((panel) =>
+            transom.id === draft.selected?.transomId && panel.id === draft.selected.panelId
+              ? { ...panel, openingType: module.openingType, label: module.label }
+              : panel
+          )
+        }));
+      })
+    ),
+
+  applyRowLibraryModule: (moduleId) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (!draft.selected) {
+          return;
+        }
+
+        const module = rowLibraryModules.find((item) => item.id === moduleId);
+        const transom = draft.design.transoms.find((item) => item.id === draft.selected?.transomId);
+        if (!module || !transom) {
+          return;
+        }
+
+        const totalWidth = transom.panels.reduce((sum, panel) => sum + panel.width, 0);
+        const totalRatio = module.panels.reduce((sum, panel) => sum + panel.ratio, 0);
+        let remaining = totalWidth;
+        const nextPanels = module.panels.map((panel, index) => {
+          const width =
+            index === module.panels.length - 1
+              ? remaining
+              : Math.max(100, Math.round((totalWidth * panel.ratio) / totalRatio));
+          remaining -= width;
+          return {
+            id: `${transom.id}-${module.id}-${index + 1}`,
+            width,
+            label: panel.label,
+            openingType: panel.openingType
+          };
+        });
+
+        transom.panels = normalizePanelWidths(nextPanels, totalWidth);
+        draft.selected = { transomId: transom.id, panelId: transom.panels[0].id };
+      })
+    ),
+
+  addReferenceGuide: (orientation, positionMm, label) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const limit = orientation === "vertical" ? draft.design.totalWidth : draft.design.totalHeight;
+        const nextPosition = Math.max(0, Math.min(limit, Math.round(positionMm)));
+        draft.design.guides.push({
+          id: `guide-${orientation}-${Date.now()}`,
+          orientation,
+          positionMm: nextPosition,
+          locked: false,
+          label: label?.trim() || `${orientation === "vertical" ? "V" : "H"} ${nextPosition}`
+        });
+      })
+    ),
+
+  setGuidePosition: (guideId, positionMm) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const guide = draft.design.guides.find((item) => item.id === guideId);
+        if (!guide || guide.locked) {
+          return;
+        }
+        const limit = guide.orientation === "vertical" ? draft.design.totalWidth : draft.design.totalHeight;
+        guide.positionMm = Math.max(0, Math.min(limit, Math.round(positionMm)));
+        guide.label = `${guide.orientation === "vertical" ? "V" : "H"} ${guide.positionMm}`;
+      })
+    ),
+
+  toggleGuideLock: (guideId) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const guide = draft.design.guides.find((item) => item.id === guideId);
+        if (!guide) {
+          return;
+        }
+        guide.locked = !guide.locked;
+      })
+    ),
+
+  renameGuide: (guideId, label) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const guide = draft.design.guides.find((item) => item.id === guideId);
+        if (!guide) {
+          return;
+        }
+        guide.label = label.trim() || `${guide.orientation === "vertical" ? "V" : "H"} ${guide.positionMm}`;
+      })
+    ),
+
+  removeGuide: (guideId) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        draft.design.guides = draft.design.guides.filter((item) => item.id !== guideId);
       })
     ),
 
