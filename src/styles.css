@@ -486,6 +486,36 @@ select {
   margin-top: 12px;
 }
 
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.tool-chip,
+.snap-chip {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #eef3fb;
+  cursor: pointer;
+}
+
+.tool-chip.active,
+.snap-chip.active {
+  background: linear-gradient(135deg, #ffd479 0%, #e88b2d 100%);
+  color: #1b2430;
+  border-color: transparent;
+}
+
+.snap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .tab-bar {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -579,6 +609,23 @@ select {
 
 .presentation-sub-text {
   fill: #c9d6e6;
+}
+
+.crosshair-line {
+  stroke: rgba(89, 110, 140, 0.32);
+  stroke-width: 1;
+  stroke-dasharray: 6 6;
+}
+
+.drag-preview-box {
+  fill: rgba(17, 24, 39, 0.82);
+  stroke: rgba(255, 255, 255, 0.18);
+}
+
+.drag-preview-text {
+  fill: #f8fbff;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .type-hint {

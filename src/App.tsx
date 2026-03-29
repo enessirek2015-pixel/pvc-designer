@@ -59,6 +59,15 @@ const hardwareOptions: Array<{ value: HardwareQuality; label: string }> = [
 ];
 
 const sampleTemplateId = designTemplates[0].id;
+type ToolMode =
+  | "select"
+  | "split-vertical"
+  | "split-horizontal"
+  | "add-left"
+  | "add-right"
+  | "add-top"
+  | "add-bottom"
+  | "delete-panel";
 
 function App() {
   const [viewMode, setViewMode] = useState<"studio" | "technical" | "presentation">("studio");
@@ -66,6 +75,8 @@ function App() {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [spacePressed, setSpacePressed] = useState(false);
+  const [toolMode, setToolMode] = useState<ToolMode>("select");
+  const [snapMm, setSnapMm] = useState(10);
   const panRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const {
     design,
@@ -272,6 +283,42 @@ function App() {
         </section>
 
         <section className="rail-section compact">
+          <h2>CAD Araclari</h2>
+          <div className="tool-grid">
+            {[
+              ["select", "Sec"],
+              ["split-vertical", "Dikey"],
+              ["split-horizontal", "Yatay"],
+              ["add-left", "Sol +"],
+              ["add-right", "Sag +"],
+              ["add-top", "Ust +"],
+              ["add-bottom", "Alt +"],
+              ["delete-panel", "Sil"]
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                className={`tool-chip ${toolMode === value ? "active" : ""}`}
+                onClick={() => setToolMode(value as ToolMode)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="snap-row">
+            <span className="canvas-chip">Snap</span>
+            {[1, 5, 10, 50].map((value) => (
+              <button
+                key={value}
+                className={`snap-chip ${snapMm === value ? "active" : ""}`}
+                onClick={() => setSnapMm(value)}
+              >
+                {value} mm
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="rail-section compact">
           <h2>Panel Tipleri</h2>
           <div className="option-pills">
             {openingTypeOptions.map((option) => (
@@ -393,8 +440,14 @@ function App() {
               onInsertPanel={insertPanelAdjacent}
               onInsertTransom={insertTransomAdjacent}
               viewMode={viewMode}
+              toolMode={toolMode}
+              onToolModeChange={setToolMode}
+              onSplitVertical={splitSelectedPanelVertical}
+              onSplitHorizontal={splitSelectedTransomHorizontal}
+              onDeletePanel={deleteSelectedPanel}
               zoom={zoom}
               pan={pan}
+              snapMm={snapMm}
               onWheelZoom={(delta, reset) => {
                 if (reset) {
                   setZoom(1);
@@ -722,6 +775,13 @@ function calculatePanelArea(width: number, height: number) {
   return (width * height) / 1000000;
 }
 
+function snapValue(value: number, step: number) {
+  if (step <= 1) {
+    return value;
+  }
+  return Math.round(value / step) * step;
+}
+
 function buildBom(design: PvcDesign) {
   const openingPanels = design.transoms.flatMap((item) => item.panels).filter((panel) => panel.openingType !== "fixed").length;
   const glassAreaM2 = design.transoms.reduce(
@@ -771,8 +831,14 @@ function PvcCanvas({
   onInsertPanel,
   onInsertTransom,
   viewMode,
+  toolMode,
+  onToolModeChange,
+  onSplitVertical,
+  onSplitHorizontal,
+  onDeletePanel,
   zoom,
   pan,
+  snapMm,
   onWheelZoom,
   onPanStart,
   onPanMove,
@@ -784,8 +850,14 @@ function PvcCanvas({
   onInsertPanel: (side: "left" | "right") => void;
   onInsertTransom: (side: "top" | "bottom") => void;
   viewMode: "studio" | "technical" | "presentation";
+  toolMode: ToolMode;
+  onToolModeChange: (mode: ToolMode) => void;
+  onSplitVertical: () => void;
+  onSplitHorizontal: () => void;
+  onDeletePanel: () => void;
   zoom: number;
   pan: { x: number; y: number };
+  snapMm: number;
   onWheelZoom: (delta: number, reset?: boolean) => void;
   onPanStart: (clientX: number, clientY: number) => void;
   onPanMove: (clientX: number, clientY: number) => void;
@@ -795,6 +867,8 @@ function PvcCanvas({
   const selectPanel = useDesignerStore((state) => state.selectPanel);
   const setPanelWidthById = useDesignerStore((state) => state.setPanelWidthById);
   const setTransomHeightById = useDesignerStore((state) => state.setTransomHeightById);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [dragPreview, setDragPreview] = useState<string | null>(null);
   const [dragState, setDragState] = useState<
     | {
         type: "vertical";
@@ -836,18 +910,23 @@ function PvcCanvas({
     const handleMove = (event: MouseEvent) => {
       if (dragState.type === "vertical") {
         const deltaPx = event.clientX - dragState.startClientX;
-        const deltaMm = deltaPx / dragState.scale;
-        setPanelWidthById(dragState.transomId, dragState.panelId, dragState.startWidth + deltaMm);
+        const deltaMm = snapValue(deltaPx / dragState.scale, snapMm);
+        const nextValue = dragState.startWidth + deltaMm;
+        setPanelWidthById(dragState.transomId, dragState.panelId, nextValue);
+        setDragPreview(`${Math.round(nextValue)} mm`);
         return;
       }
 
       const deltaPx = event.clientY - dragState.startClientY;
-      const deltaMm = deltaPx / dragState.scale;
-      setTransomHeightById(dragState.transomId, dragState.startHeight + deltaMm);
+      const deltaMm = snapValue(deltaPx / dragState.scale, snapMm);
+      const nextValue = dragState.startHeight + deltaMm;
+      setTransomHeightById(dragState.transomId, nextValue);
+      setDragPreview(`${Math.round(nextValue)} mm`);
     };
 
     const handleUp = () => {
       setDragState(null);
+      setDragPreview(null);
     };
 
     window.addEventListener("mousemove", handleMove);
@@ -878,6 +957,8 @@ function PvcCanvas({
         }
       }}
       onMouseMove={(event) => {
+        const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+        setCursor({ x: event.clientX - rect.left, y: event.clientY - rect.top });
         if ((event.buttons & 4) || panEnabled) {
           onPanMove(event.clientX, event.clientY);
         }
@@ -980,7 +1061,31 @@ function PvcCanvas({
                   strokeWidth={isSelected ? "4.5" : "1.4"}
                   filter={isTechnical ? undefined : "url(#panelShadow)"}
                   className="clickable-panel"
-                  onClick={() => selectPanel(transom.id, panel.id)}
+                  onClick={() => {
+                    selectPanel(transom.id, panel.id);
+                    if (toolMode === "split-vertical") {
+                      onSplitVertical();
+                      onToolModeChange("select");
+                    } else if (toolMode === "split-horizontal") {
+                      onSplitHorizontal();
+                      onToolModeChange("select");
+                    } else if (toolMode === "add-left") {
+                      onInsertPanel("left");
+                      onToolModeChange("select");
+                    } else if (toolMode === "add-right") {
+                      onInsertPanel("right");
+                      onToolModeChange("select");
+                    } else if (toolMode === "add-top") {
+                      onInsertTransom("top");
+                      onToolModeChange("select");
+                    } else if (toolMode === "add-bottom") {
+                      onInsertTransom("bottom");
+                      onToolModeChange("select");
+                    } else if (toolMode === "delete-panel") {
+                      onDeletePanel();
+                      onToolModeChange("select");
+                    }
+                  }}
                 />
                 <text
                   x={panelX + widthPx / 2}
@@ -1179,6 +1284,20 @@ function PvcCanvas({
               onClick={() => onInsertTransom("bottom")}
             />
           </>
+        )}
+        {cursor && !panEnabled && (
+          <g className="crosshair-group">
+            <line x1={cursor.x} y1="0" x2={cursor.x} y2={drawingHeight + 300} className="crosshair-line" />
+            <line x1="0" y1={cursor.y} x2={drawingWidth + margin * 2} y2={cursor.y} className="crosshair-line" />
+          </g>
+        )}
+        {dragPreview && cursor && (
+          <g>
+            <rect x={cursor.x + 16} y={cursor.y - 26} width="88" height="24" rx="8" className="drag-preview-box" />
+            <text x={cursor.x + 60} y={cursor.y - 10} textAnchor="middle" className="drag-preview-text">
+              {dragPreview}
+            </text>
+          </g>
         )}
         </g>
       </svg>
