@@ -671,6 +671,20 @@ select {
   stroke-width: 1.3;
 }
 
+.multi-selection-outline {
+  fill: rgba(45, 108, 223, 0.08);
+  stroke: rgba(45, 108, 223, 0.95);
+  stroke-width: 2;
+  stroke-dasharray: 10 4;
+}
+
+.marquee-box {
+  fill: rgba(45, 108, 223, 0.12);
+  stroke: rgba(45, 108, 223, 0.9);
+  stroke-width: 1.6;
+  stroke-dasharray: 8 4;
+}
+
 .type-hint {
   display: grid;
   gap: 4px;

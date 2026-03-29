@@ -16,6 +16,11 @@ interface SelectionState {
   panelId: string;
 }
 
+export interface PanelRef {
+  transomId: string;
+  panelId: string;
+}
+
 interface HistoryEntry {
   design: PvcDesign;
   selected: SelectionState | null;
@@ -54,6 +59,7 @@ interface DesignerState {
   insertTransomAdjacent: (side: "top" | "bottom") => void;
   equalizeSelectedRowPanels: () => void;
   equalizeAllTransomHeights: () => void;
+  applyOpeningTypeToPanels: (panels: PanelRef[], openingType: OpeningType) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -509,6 +515,19 @@ export const useDesignerStore = create<DesignerState>((set) => ({
           return;
         }
         draft.design.transoms = normalizeTransomHeights(draft.design.transoms, draft.design.totalHeight);
+      })
+    ),
+
+  applyOpeningTypeToPanels: (panels, openingType) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        const keySet = new Set(panels.map((item) => `${item.transomId}:${item.panelId}`));
+        draft.design.transoms = draft.design.transoms.map((transom) => ({
+          ...transom,
+          panels: transom.panels.map((panel) =>
+            keySet.has(`${transom.id}:${panel.id}`) ? { ...panel, openingType } : panel
+          )
+        }));
       })
     ),
 

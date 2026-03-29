@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { designTemplates } from "./data/sampleDesign";
 import { useDesignerStore } from "./store/useDesignerStore";
+import type { PanelRef } from "./store/useDesignerStore";
 import type {
   FrameColor,
   GlassType,
@@ -77,6 +78,7 @@ function App() {
   const [spacePressed, setSpacePressed] = useState(false);
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapMm, setSnapMm] = useState(10);
+  const [multiSelection, setMultiSelection] = useState<PanelRef[]>([]);
   const panRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const {
     design,
@@ -107,6 +109,7 @@ function App() {
     insertTransomAdjacent,
     equalizeSelectedRowPanels,
     equalizeAllTransomHeights,
+    applyOpeningTypeToPanels,
     undo,
     redo
   } = useDesignerStore();
@@ -443,6 +446,8 @@ function App() {
             <PvcCanvas
               design={design}
               selected={selected}
+              multiSelection={multiSelection}
+              onMultiSelectionChange={setMultiSelection}
               onInsertPanel={insertPanelAdjacent}
               onInsertTransom={insertTransomAdjacent}
               viewMode={viewMode}
@@ -490,6 +495,16 @@ function App() {
               <strong>{toolMode}</strong>
               <span className="command-meta">Snap {snapMm} mm</span>
               <span className="command-meta">Zoom %{Math.round(zoom * 100)}</span>
+              {multiSelection.length > 0 && (
+                <>
+                  <span className="command-meta">{multiSelection.length} panel secili</span>
+                  <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "fixed")}>Toplu Sabit</button>
+                  <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "turn-right")}>Toplu Sag</button>
+                  <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "turn-left")}>Toplu Sol</button>
+                  <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "sliding")}>Toplu Surme</button>
+                  <button className="tool-chip" onClick={() => setMultiSelection([])}>Secimi Temizle</button>
+                </>
+              )}
             </div>
           </section>
 
@@ -840,6 +855,8 @@ function buildBomHtml(design: PvcDesign, bom: ReturnType<typeof buildBom>) {
 function PvcCanvas({
   design,
   selected,
+  multiSelection,
+  onMultiSelectionChange,
   onInsertPanel,
   onInsertTransom,
   viewMode,
@@ -859,6 +876,8 @@ function PvcCanvas({
 }: {
   design: PvcDesign;
   selected: { transomId: string; panelId: string } | null;
+  multiSelection: PanelRef[];
+  onMultiSelectionChange: (panels: PanelRef[]) => void;
   onInsertPanel: (side: "left" | "right") => void;
   onInsertTransom: (side: "top" | "bottom") => void;
   viewMode: "studio" | "technical" | "presentation";
@@ -881,6 +900,8 @@ function PvcCanvas({
   const setTransomHeightById = useDesignerStore((state) => state.setTransomHeightById);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<string | null>(null);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const marqueeStart = useRef<{ x: number; y: number } | null>(null);
   const [dragState, setDragState] = useState<
     | {
         type: "vertical";
@@ -913,6 +934,32 @@ function PvcCanvas({
   const mullionSize = design.mullionThickness * scale;
   const transomOffsets = buildTransomOffsets(design, scale, outerY);
   const selectedBounds = getSelectedBounds(design, selected, scale, outerX + frameInset, transomOffsets);
+  const multiSelectionKeys = useMemo(
+    () => new Set(multiSelection.map((panel) => `${panel.transomId}:${panel.panelId}`)),
+    [multiSelection]
+  );
+
+  const getWorldPoint = (clientX: number, clientY: number, host: HTMLDivElement) => {
+    const rect = host.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom
+    };
+  };
+
+  const finishMarqueeSelection = (selectionRect: { x: number; y: number; width: number; height: number }) => {
+    const nextSelection = collectPanelsInRect(
+      design,
+      selectionRect,
+      scale,
+      outerX + frameInset,
+      transomOffsets
+    );
+    onMultiSelectionChange(nextSelection);
+    if (nextSelection[0]) {
+      selectPanel(nextSelection[0].transomId, nextSelection[0].panelId);
+    }
+  };
 
   useEffect(() => {
     if (!dragState) {
@@ -966,17 +1013,40 @@ function PvcCanvas({
       onMouseDown={(event) => {
         if (event.button === 1 || panEnabled) {
           onPanStart(event.clientX, event.clientY);
+          return;
+        }
+
+        if (event.button === 0 && event.shiftKey && toolMode === "select") {
+          const worldPoint = getWorldPoint(event.clientX, event.clientY, event.currentTarget);
+          marqueeStart.current = worldPoint;
+          setMarquee({ x: worldPoint.x, y: worldPoint.y, width: 0, height: 0 });
         }
       }}
       onMouseMove={(event) => {
         const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
         setCursor({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+        if (marqueeStart.current) {
+          const worldPoint = getWorldPoint(event.clientX, event.clientY, event.currentTarget);
+          setMarquee(normalizeRect(marqueeStart.current.x, marqueeStart.current.y, worldPoint.x, worldPoint.y));
+          return;
+        }
         if ((event.buttons & 4) || panEnabled) {
           onPanMove(event.clientX, event.clientY);
         }
       }}
-      onMouseUp={onPanEnd}
-      onMouseLeave={onPanEnd}
+      onMouseUp={() => {
+        if (marquee) {
+          finishMarqueeSelection(marquee);
+        }
+        marqueeStart.current = null;
+        setMarquee(null);
+        onPanEnd();
+      }}
+      onMouseLeave={() => {
+        marqueeStart.current = null;
+        setMarquee(null);
+        onPanEnd();
+      }}
     >
       <svg
         className="drawing-surface"
@@ -1047,6 +1117,8 @@ function PvcCanvas({
             const panelY = rowTop;
             const isSelected =
               selected?.transomId === transom.id && selected.panelId === panel.id;
+            const panelKey = `${transom.id}:${panel.id}`;
+            const isMultiSelected = multiSelectionKeys.has(panelKey);
 
             currentX += widthPx;
 
@@ -1063,17 +1135,32 @@ function PvcCanvas({
                     isTechnical
                       ? isSelected
                         ? "#c18dfc"
-                        : "#69b95c"
+                        : isMultiSelected
+                          ? "#f6c84a"
+                          : "#69b95c"
                       : isSelected
                         ? "#f08a18"
-                        : isPresentation
-                          ? "#d2b377"
-                          : "#748090"
+                        : isMultiSelected
+                          ? "#2d6cdf"
+                          : isPresentation
+                            ? "#d2b377"
+                            : "#748090"
                   }
-                  strokeWidth={isSelected ? "4.5" : "1.4"}
+                  strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
                   filter={isTechnical ? undefined : "url(#panelShadow)"}
                   className="clickable-panel"
-                  onClick={() => {
+                  onClick={(event) => {
+                    if (event.shiftKey && toolMode === "select") {
+                      const exists = multiSelectionKeys.has(panelKey);
+                      const nextSelection = exists
+                        ? multiSelection.filter((item) => item.transomId !== transom.id || item.panelId !== panel.id)
+                        : [...multiSelection, { transomId: transom.id, panelId: panel.id }];
+                      onMultiSelectionChange(nextSelection);
+                      selectPanel(transom.id, panel.id);
+                      return;
+                    }
+
+                    onMultiSelectionChange([{ transomId: transom.id, panelId: panel.id }]);
                     selectPanel(transom.id, panel.id);
                     if (toolMode === "split-vertical") {
                       onSplitVertical();
@@ -1298,6 +1385,23 @@ function PvcCanvas({
             />
           </>
         )}
+        {multiSelection.map((item) => {
+          const bounds = getSelectedBounds(design, item, scale, outerX + frameInset, transomOffsets);
+          if (!bounds) {
+            return null;
+          }
+
+          return <MultiSelectionOutline key={`${item.transomId}:${item.panelId}`} bounds={bounds} />;
+        })}
+        {marquee && (
+          <rect
+            x={marquee.x}
+            y={marquee.y}
+            width={marquee.width}
+            height={marquee.height}
+            className="marquee-box"
+          />
+        )}
         {cursor && !panEnabled && (
           <g className="crosshair-group">
             <line x1={cursor.x} y1="0" x2={cursor.x} y2={drawingHeight + 300} className="crosshair-line" />
@@ -1355,6 +1459,23 @@ function SelectionHandles({
         />
       ))}
     </g>
+  );
+}
+
+function MultiSelectionOutline({
+  bounds
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+}) {
+  return (
+    <rect
+      x={bounds.x}
+      y={bounds.y}
+      width={bounds.width}
+      height={bounds.height}
+      rx="6"
+      className="multi-selection-outline"
+    />
   );
 }
 
@@ -1456,6 +1577,59 @@ function getSelectedBounds(
   const height = transom.height * scale;
 
   return { x, y, width, height };
+}
+
+function normalizeRect(x1: number, y1: number, x2: number, y2: number) {
+  return {
+    x: Math.min(x1, x2),
+    y: Math.min(y1, y2),
+    width: Math.abs(x2 - x1),
+    height: Math.abs(y2 - y1)
+  };
+}
+
+function collectPanelsInRect(
+  design: PvcDesign,
+  rect: { x: number; y: number; width: number; height: number },
+  scale: number,
+  startX: number,
+  transomOffsets: number[]
+) {
+  const selections: PanelRef[] = [];
+
+  design.transoms.forEach((transom, transomIndex) => {
+    let currentX = startX;
+    const panelY = transomOffsets[transomIndex];
+    const panelHeight = transom.height * scale;
+
+    transom.panels.forEach((panel) => {
+      const panelBounds = {
+        x: currentX,
+        y: panelY,
+        width: panel.width * scale,
+        height: panelHeight
+      };
+      currentX += panelBounds.width;
+
+      if (rectsIntersect(rect, panelBounds)) {
+        selections.push({ transomId: transom.id, panelId: panel.id });
+      }
+    });
+  });
+
+  return selections;
+}
+
+function rectsIntersect(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+) {
+  return !(
+    a.x + a.width < b.x ||
+    b.x + b.width < a.x ||
+    a.y + a.height < b.y ||
+    b.y + b.height < a.y
+  );
 }
 
 function renderPanelChainDimensions(
