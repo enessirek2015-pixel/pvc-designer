@@ -105,6 +105,8 @@ function App() {
     deleteSelectedTransom,
     insertPanelAdjacent,
     insertTransomAdjacent,
+    equalizeSelectedRowPanels,
+    equalizeAllTransomHeights,
     undo,
     redo
   } = useDesignerStore();
@@ -316,6 +318,10 @@ function App() {
               </button>
             ))}
           </div>
+          <div className="cad-ops">
+            <button className="tool-chip" onClick={equalizeSelectedRowPanels}>Satiri Esitle</button>
+            <button className="tool-chip" onClick={equalizeAllTransomHeights}>Satirlari Esitle</button>
+          </div>
         </section>
 
         <section className="rail-section compact">
@@ -478,6 +484,12 @@ function App() {
               <span>{Math.round(zoom * 100)}%</span>
               <button className="zoom-button" onClick={() => setZoom((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))}>+</button>
               <button className="zoom-button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>100%</button>
+            </div>
+            <div className="command-bar">
+              <span className="command-label">Komut</span>
+              <strong>{toolMode}</strong>
+              <span className="command-meta">Snap {snapMm} mm</span>
+              <span className="command-meta">Zoom %{Math.round(zoom * 100)}</span>
             </div>
           </section>
 
@@ -1259,6 +1271,7 @@ function PvcCanvas({
 
         {selectedBounds && !isTechnical && (
           <>
+            <SelectionHandles bounds={selectedBounds} />
             <CanvasActionButton
               x={selectedBounds.x - 22}
               y={selectedBounds.y + selectedBounds.height / 2}
@@ -1302,6 +1315,46 @@ function PvcCanvas({
         </g>
       </svg>
     </div>
+  );
+}
+
+function SelectionHandles({
+  bounds
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+}) {
+  const points = [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width / 2, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x, y: bounds.y + bounds.height / 2 },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height / 2 },
+    { x: bounds.x, y: bounds.y + bounds.height },
+    { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+  ];
+
+  return (
+    <g>
+      <rect
+        x={bounds.x}
+        y={bounds.y}
+        width={bounds.width}
+        height={bounds.height}
+        className="selection-outline"
+      />
+      {points.map((point, index) => (
+        <rect
+          key={index}
+          x={point.x - 5}
+          y={point.y - 5}
+          width="10"
+          height="10"
+          rx="2"
+          className="selection-handle"
+        />
+      ))}
+    </g>
   );
 }
 

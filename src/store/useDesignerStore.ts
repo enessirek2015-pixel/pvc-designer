@@ -52,6 +52,8 @@ interface DesignerState {
   deleteSelectedTransom: () => void;
   insertPanelAdjacent: (side: "left" | "right") => void;
   insertTransomAdjacent: (side: "top" | "bottom") => void;
+  equalizeSelectedRowPanels: () => void;
+  equalizeAllTransomHeights: () => void;
   undo: () => void;
   redo: () => void;
 }
@@ -482,6 +484,31 @@ export const useDesignerStore = create<DesignerState>((set) => ({
         const insertIndex = side === "top" ? transomIndex : transomIndex + 1;
         draft.design.transoms.splice(insertIndex, 0, newTransom);
         draft.selected = { transomId: newTransom.id, panelId: newTransom.panels[0].id };
+      })
+    ),
+
+  equalizeSelectedRowPanels: () =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (!draft.selected) {
+          return;
+        }
+        const transom = draft.design.transoms.find((item) => item.id === draft.selected?.transomId);
+        if (!transom || transom.panels.length < 2) {
+          return;
+        }
+        const totalWidth = transom.panels.reduce((sum, panel) => sum + panel.width, 0);
+        transom.panels = normalizePanelWidths(transom.panels, totalWidth);
+      })
+    ),
+
+  equalizeAllTransomHeights: () =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        if (draft.design.transoms.length < 2) {
+          return;
+        }
+        draft.design.transoms = normalizeTransomHeights(draft.design.transoms, draft.design.totalHeight);
       })
     ),
 
