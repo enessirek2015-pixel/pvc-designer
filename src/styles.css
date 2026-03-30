@@ -826,6 +826,17 @@ select {
   cursor: pointer;
 }
 
+.zoom-button.mode {
+  min-width: 76px;
+  font-weight: 700;
+}
+
+.zoom-button.mode.active {
+  background: linear-gradient(135deg, #173e72 0%, #2b588f 100%);
+  color: #f4f8ff;
+  border-color: transparent;
+}
+
 .command-bar {
   display: flex;
   flex-wrap: wrap;
@@ -927,6 +938,21 @@ select {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.command-history-strip,
+.placement-locks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.command-history-chip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .command-status {
@@ -1148,6 +1174,26 @@ select {
   stroke-width: 1.2;
 }
 
+.technical-page-frame {
+  fill: rgba(6, 10, 17, 0.28);
+  stroke: rgba(105, 185, 92, 0.34);
+  stroke-width: 1.2;
+}
+
+.technical-page-frame.inner {
+  fill: none;
+  stroke: rgba(244, 223, 177, 0.18);
+  stroke-width: 0.9;
+  stroke-dasharray: 8 8;
+}
+
+.technical-page-label {
+  fill: rgba(244, 223, 177, 0.82);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
 .technical-title-head {
   fill: #ff5d64;
   font-size: 11px;
@@ -1296,6 +1342,12 @@ select {
   stroke: rgba(240, 176, 73, 0.38);
 }
 
+.overlay-palette-shell.mullion,
+.overlay-palette-shell.transom {
+  fill: rgba(57, 35, 8, 0.96);
+  stroke: rgba(240, 138, 24, 0.42);
+}
+
 .overlay-palette-title {
   fill: rgba(248, 251, 255, 0.92);
   font-size: 10px;
@@ -1327,6 +1379,12 @@ select {
   stroke: rgba(240, 176, 73, 0.28);
 }
 
+.overlay-chip.mullion,
+.overlay-chip.transom {
+  fill: rgba(255, 244, 220, 0.1);
+  stroke: rgba(240, 138, 24, 0.32);
+}
+
 .overlay-chip.active.sash {
   fill: rgba(214, 165, 67, 0.98);
   stroke: rgba(255, 246, 220, 0.7);
@@ -1339,6 +1397,12 @@ select {
 
 .overlay-chip.active.hardware {
   fill: rgba(240, 176, 73, 0.96);
+  stroke: rgba(255, 246, 222, 0.64);
+}
+
+.overlay-chip.active.mullion,
+.overlay-chip.active.transom {
+  fill: rgba(240, 138, 24, 0.96);
   stroke: rgba(255, 246, 222, 0.64);
 }
 
@@ -1356,11 +1420,29 @@ select {
   fill: #152233;
 }
 
+.overlay-chip.active.mullion + .overlay-chip-text,
+.overlay-chip.active.transom + .overlay-chip-text {
+  fill: #1d1306;
+}
+
 .command-preview-shell {
   fill: rgba(74, 124, 242, 0.08);
   stroke: rgba(74, 124, 242, 0.92);
   stroke-width: 1.7;
   stroke-dasharray: 8 5;
+}
+
+.command-preview-shell.target {
+  fill: rgba(74, 124, 242, 0.06);
+  stroke: rgba(74, 124, 242, 0.72);
+  stroke-dasharray: 6 6;
+}
+
+.command-preview-slot {
+  fill: rgba(244, 223, 177, 0.12);
+  stroke: rgba(244, 223, 177, 0.72);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
 }
 
 .command-preview-shell.frame {
@@ -1385,15 +1467,361 @@ select {
   stroke: rgba(240, 138, 24, 0.82);
 }
 
+.command-preview-tile.move {
+  fill: rgba(67, 196, 164, 0.14);
+  stroke: rgba(42, 156, 131, 0.88);
+}
+
 .command-preview-tile.mirror {
   fill: rgba(210, 179, 119, 0.1);
   stroke: rgba(210, 179, 119, 0.82);
+}
+
+.command-preview-tile.align {
+  fill: rgba(240, 138, 24, 0.12);
+  stroke: rgba(240, 138, 24, 0.86);
+}
+
+.command-preview-tile.distribute {
+  fill: rgba(87, 190, 225, 0.1);
+  stroke: rgba(87, 190, 225, 0.8);
+}
+
+.command-preview-tile.grid-row {
+  fill: rgba(74, 124, 242, 0.04);
+  stroke: rgba(74, 124, 242, 0.35);
+}
+
+.command-preview-tile.grid-cell {
+  fill: rgba(193, 141, 252, 0.09);
+  stroke: rgba(193, 141, 252, 0.76);
+}
+
+.technical-profile-line {
+  fill: none;
+  stroke: rgba(105, 185, 92, 0.92);
+  stroke-width: 1;
+}
+
+.technical-profile-line.soft {
+  stroke: rgba(105, 185, 92, 0.55);
+  stroke-dasharray: 4 4;
+}
+
+.technical-profile-line.highlight {
+  stroke: rgba(193, 141, 252, 0.86);
+}
+
+.technical-profile-line.chamber {
+  stroke: rgba(244, 223, 177, 0.4);
+  stroke-dasharray: 3 4;
+}
+
+.technical-glass-contour {
+  fill: rgba(74, 124, 242, 0.04);
+  stroke: rgba(105, 185, 92, 0.78);
+  stroke-width: 1;
+}
+
+.technical-section-line {
+  stroke: rgba(210, 179, 119, 0.94);
+  stroke-width: 1.3;
+}
+
+.technical-section-circle {
+  fill: #101722;
+  stroke: rgba(210, 179, 119, 0.94);
+  stroke-width: 1.3;
+}
+
+.technical-section-text {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.technical-reference-line {
+  stroke: rgba(244, 223, 177, 0.62);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.technical-reference-badge {
+  fill: #101722;
+  stroke: rgba(193, 141, 252, 0.95);
+  stroke-width: 1.3;
+}
+
+.technical-reference-text {
+  fill: rgba(244, 223, 177, 0.98);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.technical-schedule-shell {
+  fill: rgba(11, 17, 28, 0.94);
+  stroke: rgba(105, 185, 92, 0.56);
+  stroke-width: 1.2;
+}
+
+.technical-schedule-title {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.technical-schedule-head {
+  fill: rgba(126, 214, 110, 0.88);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.technical-schedule-divider {
+  stroke: rgba(105, 185, 92, 0.24);
+  stroke-width: 1;
+}
+
+.technical-schedule-row {
+  fill: rgba(232, 239, 248, 0.94);
+  font-size: 10px;
+}
+
+.technical-schedule-row.muted {
+  fill: rgba(151, 166, 186, 0.88);
+}
+
+.technical-info-shell {
+  fill: rgba(11, 17, 28, 0.94);
+  stroke: rgba(193, 141, 252, 0.42);
+  stroke-width: 1.1;
+}
+
+.technical-info-title {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.technical-info-head {
+  fill: rgba(126, 214, 110, 0.88);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.technical-info-row {
+  fill: rgba(232, 239, 248, 0.94);
+  font-size: 9.6px;
+}
+
+.technical-info-row.muted {
+  fill: rgba(151, 166, 186, 0.9);
+}
+
+.technical-info-divider {
+  stroke: rgba(193, 141, 252, 0.18);
+  stroke-width: 1;
+}
+
+.technical-detail-line {
+  stroke: rgba(244, 223, 177, 0.8);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+}
+
+.technical-detail-card {
+  fill: rgba(11, 17, 28, 0.96);
+  stroke: rgba(193, 141, 252, 0.55);
+  stroke-width: 1.1;
+}
+
+.technical-detail-title {
+  fill: rgba(126, 214, 110, 0.9);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.technical-detail-value {
+  fill: rgba(232, 239, 248, 0.96);
+  font-size: 9px;
+}
+
+.technical-section-shell {
+  fill: rgba(11, 17, 28, 0.94);
+  stroke: rgba(244, 223, 177, 0.3);
+  stroke-width: 1.1;
+}
+
+.technical-section-title {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.technical-section-frame {
+  fill: rgba(105, 185, 92, 0.1);
+  stroke: rgba(105, 185, 92, 0.92);
+  stroke-width: 1.2;
+}
+
+.technical-section-sash {
+  fill: rgba(193, 141, 252, 0.12);
+  stroke: rgba(193, 141, 252, 0.82);
+  stroke-width: 1.1;
+}
+
+.technical-section-glass {
+  fill: rgba(74, 124, 242, 0.16);
+  stroke: rgba(74, 124, 242, 0.88);
+  stroke-width: 1;
+}
+
+.technical-section-divider {
+  stroke: rgba(244, 223, 177, 0.62);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.technical-section-meta {
+  fill: rgba(232, 239, 248, 0.96);
+  font-size: 9.5px;
+}
+
+.technical-section-meta.muted {
+  fill: rgba(151, 166, 186, 0.92);
+}
+
+.technical-detail-schedule-shell {
+  fill: rgba(11, 17, 28, 0.94);
+  stroke: rgba(193, 141, 252, 0.36);
+  stroke-width: 1.1;
+}
+
+.technical-detail-sheet {
+  fill: rgba(8, 13, 22, 0.94);
+  stroke: rgba(74, 124, 242, 0.34);
+  stroke-width: 1.1;
+}
+
+.technical-detail-sheet-title {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.technical-detail-sheet-meta {
+  fill: rgba(232, 239, 248, 0.92);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.technical-detail-sheet-sketch {
+  fill: rgba(105, 185, 92, 0.08);
+  stroke: rgba(105, 185, 92, 0.84);
+  stroke-width: 1.1;
+}
+
+.technical-detail-sheet-sash {
+  fill: rgba(193, 141, 252, 0.1);
+  stroke: rgba(193, 141, 252, 0.78);
+  stroke-width: 1;
+}
+
+.technical-detail-sheet-glass {
+  fill: rgba(74, 124, 242, 0.14);
+  stroke: rgba(74, 124, 242, 0.82);
+  stroke-width: 1;
+}
+
+.technical-detail-sheet-axis {
+  stroke: rgba(244, 223, 177, 0.44);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.technical-detail-sheet-row {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 0.8;
+}
+
+.technical-detail-sheet-row-id {
+  fill: rgba(255, 212, 121, 0.96);
+  font-size: 9.5px;
+  font-weight: 800;
+}
+
+.technical-detail-sheet-row-text {
+  fill: rgba(232, 239, 248, 0.94);
+  font-size: 9.3px;
+}
+
+.technical-detail-sheet-note {
+  fill: rgba(232, 239, 248, 0.92);
+  font-size: 9.3px;
+}
+
+.technical-detail-sheet-note.muted {
+  fill: rgba(151, 166, 186, 0.92);
+}
+
+.technical-detail-schedule-title {
+  fill: rgba(244, 223, 177, 0.96);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.technical-detail-schedule-id {
+  fill: rgba(126, 214, 110, 0.92);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.technical-detail-schedule-label {
+  fill: rgba(232, 239, 248, 0.96);
+  font-size: 9.5px;
+}
+
+.technical-detail-schedule-value {
+  fill: rgba(151, 166, 186, 0.92);
+  font-size: 9.2px;
 }
 
 .command-preview-line {
   stroke: rgba(240, 138, 24, 0.96);
   stroke-width: 1.8;
   stroke-dasharray: 10 6;
+}
+
+.command-preview-target-line {
+  stroke: rgba(74, 124, 242, 0.82);
+  stroke-width: 1.6;
+  stroke-dasharray: 7 6;
+}
+
+.command-preview-reference-line {
+  stroke: rgba(244, 223, 177, 0.82);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+}
+
+.command-preview-reference-line.ortho {
+  stroke: rgba(109, 226, 173, 0.84);
+  stroke-width: 1.5;
+}
+
+.command-preview-reference-line.polar {
+  stroke: rgba(113, 187, 255, 0.84);
+  stroke-width: 1.5;
+}
+
+.command-preview-anchor {
+  fill: rgba(240, 138, 24, 0.94);
+  stroke: rgba(255, 247, 234, 0.96);
+  stroke-width: 1.4;
 }
 
 .command-preview-text {
@@ -1413,6 +1841,135 @@ select {
   font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.placement-telemetry-shell {
+  fill: rgba(12, 18, 29, 0.94);
+  stroke: rgba(74, 124, 242, 0.48);
+  stroke-width: 1.1;
+}
+
+.placement-telemetry-title {
+  fill: #fdf7ea;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.placement-telemetry-row {
+  fill: rgba(232, 239, 248, 0.94);
+  font-size: 10px;
+}
+
+.placement-telemetry-row.muted {
+  fill: rgba(151, 166, 186, 0.94);
+}
+
+.osnap-ring {
+  fill: rgba(16, 23, 34, 0.14);
+  stroke: rgba(255, 212, 121, 0.96);
+  stroke-width: 1.5;
+}
+
+.osnap-overlay {
+  pointer-events: none;
+}
+
+.osnap-cross {
+  stroke: rgba(255, 212, 121, 0.96);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.osnap-label-shell {
+  fill: rgba(12, 18, 29, 0.94);
+  stroke: rgba(255, 212, 121, 0.34);
+  stroke-width: 1;
+}
+
+.osnap-label-text {
+  fill: #fef7e9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.profile-detail-rect,
+.profile-bead,
+.profile-gasket,
+.profile-reinforcement,
+.profile-drainage {
+  pointer-events: none;
+}
+
+.profile-detail-rect.studio.frame {
+  fill: rgba(255, 255, 255, 0.12);
+  stroke: rgba(77, 93, 116, 0.46);
+  stroke-width: 0.9;
+}
+
+.profile-detail-rect.studio.sash {
+  fill: rgba(255, 255, 255, 0.08);
+  stroke: rgba(77, 93, 116, 0.4);
+  stroke-width: 0.85;
+}
+
+.profile-detail-rect.presentation.frame,
+.profile-detail-rect.presentation.sash {
+  fill: rgba(210, 179, 119, 0.05);
+  stroke: rgba(210, 179, 119, 0.44);
+  stroke-width: 0.95;
+}
+
+.profile-bead.studio {
+  fill: rgba(255, 255, 255, 0.04);
+  stroke: rgba(102, 122, 145, 0.5);
+  stroke-width: 0.95;
+}
+
+.profile-bead.presentation {
+  fill: rgba(210, 179, 119, 0.04);
+  stroke: rgba(210, 179, 119, 0.5);
+  stroke-width: 0.95;
+}
+
+.profile-gasket.studio {
+  stroke: rgba(67, 88, 109, 0.58);
+  stroke-width: 1;
+}
+
+.profile-gasket.presentation {
+  stroke: rgba(210, 179, 119, 0.62);
+  stroke-width: 1;
+}
+
+.profile-reinforcement.studio {
+  stroke: rgba(65, 79, 99, 0.22);
+  stroke-width: 0.9;
+}
+
+.profile-reinforcement.presentation {
+  stroke: rgba(210, 179, 119, 0.24);
+  stroke-width: 0.9;
+}
+
+.profile-chamber.studio {
+  stroke: rgba(77, 93, 116, 0.22);
+  stroke-width: 0.85;
+  stroke-dasharray: 3 4;
+}
+
+.profile-chamber.presentation {
+  stroke: rgba(210, 179, 119, 0.24);
+  stroke-width: 0.85;
+  stroke-dasharray: 3 4;
+}
+
+.profile-drainage.studio {
+  fill: rgba(58, 70, 88, 0.64);
+}
+
+.profile-drainage.presentation {
+  fill: rgba(210, 179, 119, 0.68);
 }
 
 .preview-meta {
@@ -1463,6 +2020,13 @@ select {
   stroke: rgba(45, 108, 223, 0.95);
   stroke-width: 2;
   stroke-dasharray: 10 4;
+}
+
+.multi-selection-envelope {
+  fill: rgba(74, 124, 242, 0.04);
+  stroke: rgba(74, 124, 242, 0.86);
+  stroke-width: 2.2;
+  stroke-dasharray: 12 6;
 }
 
 .object-selection-outline {

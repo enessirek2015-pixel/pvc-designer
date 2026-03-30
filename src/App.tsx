@@ -105,12 +105,90 @@ type VisibleLayers = {
   notes: boolean;
 };
 
+type OsnapModes = {
+  endpoint: boolean;
+  midpoint: boolean;
+  center: boolean;
+  intersection: boolean;
+};
+
+type OsnapCandidate = {
+  point: { x: number; y: number };
+  label: "END" | "MID" | "CEN" | "INT";
+  detail: string;
+  priority: number;
+};
+
 type CommandPreview =
-  | { type: "mirror" }
-  | { type: "array"; count: number }
+  | { type: "mirror"; axis: "vertical" | "horizontal" | "pick" }
+  | { type: "align"; mode: "panel" | "row"; position: "start" | "end" | "center" }
+  | { type: "distribute"; mode: "panel" | "row"; label: "Distribute" | "Match" }
+  | { type: "array"; count: number; stepMm?: number; mode: "panel" | "row" }
+  | { type: "grid-array"; columns: number; rows: number; columnStepMm?: number; rowStepMm?: number }
+  | { type: "offset-pattern"; delta: number; count: number; mode: "panel" | "row" }
+  | { type: "edge-adjust"; operation: "trim" | "extend"; edge: "left" | "right" | "top" | "bottom"; delta: number; mode: "panel" | "row" }
+  | { type: "center"; mode: "panel" | "row" }
+  | { type: "copy-series"; count: number; stepMm?: number; mode: "panel" | "row" }
+  | { type: "move-displace"; delta: number; mode: "panel" | "row" }
+  | { type: "offset-chain"; delta: number; count: number }
   | { type: "offset"; delta: number }
   | { type: "copy-panel"; side: "left" | "right" }
-  | { type: "copy-row"; side: "top" | "bottom" };
+  | { type: "copy-row"; side: "top" | "bottom" }
+  | { type: "move"; mode: "panel" | "row" };
+
+type InteractivePlacement =
+  | {
+      type: "copy" | "move";
+      mode: "panel" | "row";
+      phase: "base" | "target";
+      basePoint?: { x: number; y: number };
+      repeatCount?: number;
+      stepMm?: number;
+      axisLock?: "x" | "y" | null;
+      lockedDistanceMm?: number | null;
+      lockedVectorMm?: { dxMm: number; dyMm: number } | null;
+    }
+  | {
+      type: "mirror";
+      phase: "axis";
+      basePoint?: { x: number; y: number };
+    }
+  | {
+      type: "offset";
+      delta: number;
+      count?: number;
+    }
+  | null;
+
+type InteractiveCanvasTarget =
+  | {
+      kind: "base-point";
+      point: { x: number; y: number };
+    }
+  | {
+      kind: "panel";
+      transomId: string;
+      panelId: string;
+      side: "left" | "right";
+      bounds: { x: number; y: number; width: number; height: number };
+    }
+  | {
+      kind: "row";
+      transomId: string;
+      side: "top" | "bottom";
+      bounds: { x: number; y: number; width: number; height: number };
+    }
+  | {
+      kind: "mirror-axis";
+      axis: "vertical" | "horizontal";
+      line: { x1: number; y1: number; x2: number; y2: number };
+    }
+  | {
+      kind: "offset-target";
+      target: CommandTarget;
+      line: { x1: number; y1: number; x2: number; y2: number };
+      guideMeta?: { orientation: GuideOrientation; positionMm: number };
+    };
 
 type CommandTarget =
   | { type: "panel-width"; transomId: string; panelId: string; label: string }
@@ -132,6 +210,32 @@ interface ObjectSelectOptions {
   preserveMultiSelection?: boolean;
 }
 
+type BlockSelectionPreview = {
+  bounds: { x: number; y: number; width: number; height: number };
+  rowBounds: { x: number; y: number; width: number; height: number };
+  transomId: string;
+  totalWidthMm: number;
+  panels: Array<{
+    panelId: string;
+    label: string;
+    widthMm: number;
+    openingType: OpeningType;
+  }>;
+};
+
+type PlacementTelemetry = {
+  point: { x: number; y: number };
+  dxMm: number;
+  dyMm: number;
+  distanceMm: number;
+  angleDeg: number;
+  axisLock: "x" | "y" | null;
+  lockedDistanceMm: number | null;
+  lockedVectorMm: { dxMm: number; dyMm: number } | null;
+  trackingMode: "free" | "ortho" | "polar" | "vector";
+  osnapLabel: string | null;
+};
+
 function App() {
   const [viewMode, setViewMode] = useState<"studio" | "technical" | "presentation">("studio");
   const [railTab, setRailTab] = useState<"inspector" | "materials" | "library" | "bom">("inspector");
@@ -140,13 +244,26 @@ function App() {
   const [spacePressed, setSpacePressed] = useState(false);
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapMm, setSnapMm] = useState(10);
+  const [osnapEnabled, setOsnapEnabled] = useState(true);
+  const [osnapModes, setOsnapModes] = useState<OsnapModes>({
+    endpoint: true,
+    midpoint: true,
+    center: true,
+    intersection: true
+  });
+  const [orthoMode, setOrthoMode] = useState(false);
+  const [polarMode, setPolarMode] = useState(true);
+  const [polarAngle, setPolarAngle] = useState(45);
   const [multiSelection, setMultiSelection] = useState<PanelRef[]>([]);
   const [commandTarget, setCommandTarget] = useState<CommandTarget | null>(null);
   const [selectedObject, setSelectedObject] = useState<CanvasObjectSelection | null>(null);
   const [commandValue, setCommandValue] = useState("");
   const [commandQuery, setCommandQuery] = useState("");
   const [commandStatus, setCommandStatus] = useState<string | null>(null);
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [commandHistoryIndex, setCommandHistoryIndex] = useState(-1);
   const [guideLabelDraft, setGuideLabelDraft] = useState("");
+  const [interactivePlacement, setInteractivePlacement] = useState<InteractivePlacement>(null);
   const [visibleLayers, setVisibleLayers] = useState<VisibleLayers>({
     rulers: true,
     dimensions: true,
@@ -188,13 +305,34 @@ function App() {
     deleteSelectedTransom,
     insertPanelAdjacent,
     insertTransomAdjacent,
+    copySelectedPanelToTarget,
+    copySelectedTransomToTarget,
+    copySelectedPanelRepeatedToTarget,
+    copySelectedTransomRepeatedToTarget,
+    moveSelectedPanelToTarget,
+    moveSelectedTransomToTarget,
+    copyPanelGroupToTarget,
+    copyPanelGroupRepeatedToTarget,
+    movePanelGroupToTarget,
     equalizeSelectedRowPanels,
     equalizeAllTransomHeights,
     applyOpeningTypeToPanels,
     equalizePanelsByRefs,
     equalizeTransomsByRefs,
+    offsetPanelGroupPattern,
+    offsetSelectedPanelPattern,
+    offsetSelectedTransomPattern,
+    shiftPanelBlockBy,
+    shiftSelectedTransomBy,
+    adjustPanelBlockEdge,
+    adjustSelectedTransomEdge,
+    centerPanelBlock,
+    centerSelectedTransom,
     mirrorSelectedRow,
+    mirrorTransomStack,
     arraySelectedPanel,
+    arraySelectedTransom,
+    arraySelectedGrid,
     applyPanelLibraryModule,
     applyRowLibraryModule,
     addReferenceGuide,
@@ -277,7 +415,7 @@ function App() {
             title: "Yatay Kayit",
             subtitle: `Satir ${design.transoms.findIndex((item) => item.id === transom.id) + 1}`,
             detail: `Kayit ${design.mullionThickness} mm`,
-            quickActions: ["set 60", "offset 5"]
+            quickActions: ["align top", "align bottom", "match height", "distribute rows"]
           }
         : null;
     }
@@ -295,7 +433,7 @@ function App() {
         title: "Dikey Kayit",
         subtitle: `${panel.width} / ${transom.panels[transom.panels.findIndex((item) => item.id === panel.id) + 1]?.width ?? 0} mm`,
         detail: `Kayit ${design.mullionThickness} mm`,
-        quickActions: ["set 60", "offset 5"]
+        quickActions: ["align left", "align right", "match width", "distribute"]
       };
     }
 
@@ -321,9 +459,168 @@ function App() {
       title: "Panel",
       subtitle: `${panel.width} x ${transom.height} mm`,
       detail: `${formatOpeningLabel(panel.openingType)} / ${calculatePanelArea(panel.width, transom.height).toFixed(2)} m²`,
-      quickActions: ["sv", "array 3", "lib triple"]
+      quickActions: ["sv", "array 3", "align center", "match width", "lib triple"]
     };
   }, [design, selectedObject]);
+  const multiSelectionInfo = useMemo(() => {
+    if (multiSelection.length < 2) {
+      return null;
+    }
+
+    const transomIds = [...new Set(multiSelection.map((item) => item.transomId))];
+    const sameTransom = transomIds.length === 1;
+    if (!sameTransom) {
+      return {
+        sameTransom: false,
+        transomId: null,
+        panels: []
+      };
+    }
+
+    const transom = design.transoms.find((item) => item.id === transomIds[0]);
+    if (!transom) {
+      return null;
+    }
+
+    const panels = multiSelection
+      .map((ref) => ({
+        ref,
+        panel: transom.panels.find((panel) => panel.id === ref.panelId) ?? null,
+        index: transom.panels.findIndex((panel) => panel.id === ref.panelId)
+      }))
+      .filter((item) => item.panel && item.index >= 0)
+      .sort((a, b) => a.index - b.index) as Array<{
+      ref: PanelRef;
+      panel: PanelDefinition;
+      index: number;
+    }>;
+
+    const contiguous = panels.length > 0 && panels[panels.length - 1].index - panels[0].index + 1 === panels.length;
+
+    return {
+      sameTransom: true,
+      contiguous,
+      transomId: transom.id,
+      panels
+    };
+  }, [design.transoms, multiSelection]);
+  const activePanelBlockRefs = useMemo(() => {
+    if (multiSelection.length > 1 && multiSelectionInfo?.sameTransom && multiSelectionInfo.contiguous) {
+      return multiSelectionInfo.panels.map((item) => item.ref);
+    }
+    return selected ? [selected] : [];
+  }, [multiSelection.length, multiSelectionInfo, selected]);
+  const selectedTransomRefs = useMemo(() => {
+    const nextIds = new Set<string>();
+    multiSelection.forEach((item) => nextIds.add(item.transomId));
+    if (selected?.transomId) {
+      nextIds.add(selected.transomId);
+    }
+    if (selectedObject?.type === "transom-bar") {
+      nextIds.add(selectedObject.transomId);
+    }
+    return [...nextIds];
+  }, [multiSelection, selected, selectedObject]);
+  const activePanelDistributionRefs = useMemo(() => {
+    if (multiSelection.length > 1) {
+      return multiSelection;
+    }
+    return activePanelBlockRefs;
+  }, [activePanelBlockRefs, multiSelection]);
+  const panelShiftRange = useMemo(() => {
+    if (!activePanelBlockRefs.length) {
+      return null;
+    }
+
+    const transom = design.transoms.find((item) => item.id === activePanelBlockRefs[0].transomId);
+    if (!transom) {
+      return null;
+    }
+
+    const indexes = activePanelBlockRefs
+      .map((item) => transom.panels.findIndex((panel) => panel.id === item.panelId))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b);
+
+    if (!indexes.length) {
+      return null;
+    }
+
+    const startIndex = indexes[0];
+    const endIndex = indexes[indexes.length - 1];
+    if (startIndex <= 0 || endIndex >= transom.panels.length - 1) {
+      return null;
+    }
+
+    const leftNeighbor = transom.panels[startIndex - 1];
+    const rightNeighbor = transom.panels[endIndex + 1];
+    if (!leftNeighbor || !rightNeighbor) {
+      return null;
+    }
+
+    return {
+      min: -(leftNeighbor.width - 100),
+      max: rightNeighbor.width - 100
+    };
+  }, [activePanelBlockRefs, design.transoms]);
+  const transomShiftRange = useMemo(() => {
+    if (!selectedTransom) {
+      return null;
+    }
+
+    const transomIndex = design.transoms.findIndex((item) => item.id === selectedTransom.id);
+    if (transomIndex <= 0 || transomIndex >= design.transoms.length - 1) {
+      return null;
+    }
+
+    const aboveTransom = design.transoms[transomIndex - 1];
+    const belowTransom = design.transoms[transomIndex + 1];
+    if (!aboveTransom || !belowTransom) {
+      return null;
+    }
+
+    return {
+      min: -(aboveTransom.height - 150),
+      max: belowTransom.height - 150
+    };
+  }, [design.transoms, selectedTransom]);
+  const panelCenterDelta = useMemo(() => {
+    if (!activePanelBlockRefs.length) {
+      return null;
+    }
+    const transom = design.transoms.find((item) => item.id === activePanelBlockRefs[0].transomId);
+    if (!transom) {
+      return null;
+    }
+    const indexes = activePanelBlockRefs
+      .map((item) => transom.panels.findIndex((panel) => panel.id === item.panelId))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b);
+    if (!indexes.length || indexes[0] <= 0 || indexes[indexes.length - 1] >= transom.panels.length - 1) {
+      return null;
+    }
+    const leftNeighbor = transom.panels[indexes[0] - 1];
+    const rightNeighbor = transom.panels[indexes[indexes.length - 1] + 1];
+    if (!leftNeighbor || !rightNeighbor) {
+      return null;
+    }
+    return Math.round((rightNeighbor.width - leftNeighbor.width) / 2);
+  }, [activePanelBlockRefs, design.transoms]);
+  const transomCenterDelta = useMemo(() => {
+    if (!selectedTransom) {
+      return null;
+    }
+    const transomIndex = design.transoms.findIndex((item) => item.id === selectedTransom.id);
+    if (transomIndex <= 0 || transomIndex >= design.transoms.length - 1) {
+      return null;
+    }
+    const aboveTransom = design.transoms[transomIndex - 1];
+    const belowTransom = design.transoms[transomIndex + 1];
+    if (!aboveTransom || !belowTransom) {
+      return null;
+    }
+    return Math.round((belowTransom.height - aboveTransom.height) / 2);
+  }, [design.transoms, selectedTransom]);
   const totalPanelCount = designSnapshot.panelCount;
   const openingCount = designSnapshot.openingCount;
   const fixedCount = designSnapshot.fixedCount;
@@ -412,9 +709,94 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [commandStatus]);
 
+  function rememberCommand(source: string) {
+    const normalized = source.trim();
+    if (!normalized) {
+      return;
+    }
+
+    setCommandHistory((current) => {
+      const next = current[current.length - 1] === normalized ? current : [...current, normalized];
+      return next.slice(-24);
+    });
+    setCommandHistoryIndex(-1);
+  }
+
+  function browseCommandHistory(direction: "older" | "newer") {
+    if (!commandHistory.length) {
+      return;
+    }
+
+    if (direction === "older") {
+      const nextIndex = commandHistoryIndex === -1 ? commandHistory.length - 1 : Math.max(0, commandHistoryIndex - 1);
+      setCommandHistoryIndex(nextIndex);
+      setCommandQuery(commandHistory[nextIndex] ?? "");
+      return;
+    }
+
+    if (commandHistoryIndex === -1) {
+      return;
+    }
+
+    if (commandHistoryIndex >= commandHistory.length - 1) {
+      setCommandHistoryIndex(-1);
+      setCommandQuery("");
+      return;
+    }
+
+    const nextIndex = commandHistoryIndex + 1;
+    setCommandHistoryIndex(nextIndex);
+    setCommandQuery(commandHistory[nextIndex] ?? "");
+  }
+
+  function updatePlacementLock(
+    updater: (
+      placement: Extract<Exclude<InteractivePlacement, null>, { type: "copy" | "move" }>
+    ) => Extract<Exclude<InteractivePlacement, null>, { type: "copy" | "move" }>
+  ) {
+    setInteractivePlacement((current) => {
+      if (!current || (current.type !== "copy" && current.type !== "move") || current.phase !== "target") {
+        return current;
+      }
+      return updater(current as Extract<Exclude<InteractivePlacement, null>, { type: "copy" | "move" }>);
+    });
+  }
+
   function applyCommandValue() {
+    if (interactivePlacement && (interactivePlacement.type === "copy" || interactivePlacement.type === "move") && interactivePlacement.phase === "target") {
+      const vectorLock = parsePlacementVectorValue(commandValue);
+      if (vectorLock) {
+        updatePlacementLock((current) => ({
+          ...current,
+          axisLock: null,
+          lockedDistanceMm: null,
+          lockedVectorMm: vectorLock
+        }));
+        setCommandStatus(`Placement vektoru DX ${vectorLock.dxMm} / DY ${vectorLock.dyMm} mm olarak kilitlendi`);
+        setCommandValue("");
+        return;
+      }
+
+      const parsedValue = Number(commandValue.replace(",", "."));
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+        return;
+      }
+      updatePlacementLock((current) => ({
+        ...current,
+        lockedDistanceMm: Math.round(parsedValue),
+        lockedVectorMm: null
+      }));
+      setCommandStatus(`Mesafe kilidi ${Math.round(parsedValue)} mm olarak ayarlandi`);
+      setCommandValue("");
+      return;
+    }
+
     const parsedValue = Number(commandValue.replace(",", "."));
-    if (!commandTarget || !Number.isFinite(parsedValue) || parsedValue <= 0) {
+    if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+      return;
+    }
+
+    if (!commandTarget) {
       return;
     }
 
@@ -449,55 +831,56 @@ function App() {
     return design.guides.find((item) => item.id === target.guideId)?.positionMm ?? null;
   }
 
-  function applyCommandDimension(nextValue: number) {
-    if (!commandTarget || !Number.isFinite(nextValue) || nextValue <= 0) {
+  function applyCommandDimension(nextValue: number, targetOverride?: CommandTarget | null) {
+    const target = targetOverride ?? commandTarget;
+    if (!target || !Number.isFinite(nextValue) || nextValue <= 0) {
       return;
     }
 
-    if (commandTarget.type === "panel-width") {
-      setPanelWidthById(commandTarget.transomId, commandTarget.panelId, nextValue);
+    if (target.type === "panel-width") {
+      setPanelWidthById(target.transomId, target.panelId, nextValue);
       setCommandTarget({
-        ...commandTarget,
+        ...target,
         label: `Panel Genisligi - ${nextValue} mm`
       });
       setCommandStatus(`Panel genisligi ${nextValue} mm yapildi`);
       return;
     }
 
-    if (commandTarget.type === "transom-height") {
-      setTransomHeightById(commandTarget.transomId, nextValue);
+    if (target.type === "transom-height") {
+      setTransomHeightById(target.transomId, nextValue);
       setCommandTarget({
-        ...commandTarget,
+        ...target,
         label: `Satir Yuksekligi - ${nextValue} mm`
       });
       setCommandStatus(`Satir yuksekligi ${nextValue} mm yapildi`);
       return;
     }
 
-    if (commandTarget.type === "frame-thickness") {
+    if (target.type === "frame-thickness") {
       setOuterFrameThickness(nextValue);
       setCommandTarget({
-        ...commandTarget,
+        ...target,
         label: `Kasa Kalinligi - ${nextValue} mm`
       });
       setCommandStatus(`Kasa kalinligi ${nextValue} mm yapildi`);
       return;
     }
 
-    if (commandTarget.type === "mullion-thickness") {
+    if (target.type === "mullion-thickness") {
       setMullionThickness(nextValue);
       setCommandTarget({
-        ...commandTarget,
+        ...target,
         label: `Kayit Kalinligi - ${nextValue} mm`
       });
       setCommandStatus(`Kayit kalinligi ${nextValue} mm yapildi`);
       return;
     }
 
-    setGuidePosition(commandTarget.guideId, nextValue);
+    setGuidePosition(target.guideId, nextValue);
     setCommandTarget({
-      ...commandTarget,
-      label: `${commandTarget.orientation === "vertical" ? "Dikey" : "Yatay"} Guide - ${nextValue} mm`
+      ...target,
+      label: `${target.orientation === "vertical" ? "Dikey" : "Yatay"} Guide - ${nextValue} mm`
     });
     setCommandStatus(`Guide konumu ${nextValue} mm yapildi`);
   }
@@ -525,16 +908,307 @@ function App() {
     return false;
   }
 
+  function applyMoveDisplacement(deltaMm: number, mode: "panel" | "row") {
+    if (!Number.isFinite(deltaMm) || deltaMm === 0) {
+      return false;
+    }
+
+    if (mode === "row") {
+      if (!transomShiftRange) {
+        setCommandStatus("Secili satir sadece orta satirlarda kaydirilabilir");
+        return false;
+      }
+      const nextDelta = Math.max(transomShiftRange.min, Math.min(transomShiftRange.max, Math.round(deltaMm)));
+      if (nextDelta === 0) {
+        setCommandStatus("Satir kaydirma sinirina ulasildi");
+        return false;
+      }
+      shiftSelectedTransomBy(nextDelta);
+      setCommandStatus(`Secili satir ${nextDelta > 0 ? "+" : ""}${nextDelta} mm kaydirildi`);
+      return true;
+    }
+
+    if (!activePanelBlockRefs.length || !panelShiftRange) {
+      setCommandStatus("Secili panel blogu sadece iki komsu panel arasinda kaydirilabilir");
+      return false;
+    }
+
+    const nextDelta = Math.max(panelShiftRange.min, Math.min(panelShiftRange.max, Math.round(deltaMm)));
+    if (nextDelta === 0) {
+      setCommandStatus("Panel kaydirma sinirina ulasildi");
+      return false;
+    }
+    shiftPanelBlockBy(activePanelBlockRefs, nextDelta);
+    setCommandStatus(
+      `${activePanelBlockRefs.length > 1 ? "Secili blok" : "Secili panel"} ${nextDelta > 0 ? "+" : ""}${nextDelta} mm kaydirildi`
+    );
+    return true;
+  }
+
+  function applyPanelEdgeAdjust(edge: "left" | "right", deltaMm: number, operation: "trim" | "extend") {
+    if (!activePanelBlockRefs.length) {
+      setCommandStatus("Secili panel veya blok bulunamadi");
+      return false;
+    }
+
+    const signedDelta = operation === "trim" ? Math.abs(Math.round(deltaMm)) : -Math.abs(Math.round(deltaMm));
+    adjustPanelBlockEdge(activePanelBlockRefs, edge, signedDelta);
+    setCommandStatus(
+      `${activePanelBlockRefs.length > 1 ? "Blok" : "Panel"} ${operation === "trim" ? "trim" : "extend"} ${edge} ${Math.abs(Math.round(deltaMm))} mm uygulandi`
+    );
+    return true;
+  }
+
+  function applyTransomEdgeAdjust(edge: "top" | "bottom", deltaMm: number, operation: "trim" | "extend") {
+    const signedDelta = operation === "trim" ? Math.abs(Math.round(deltaMm)) : -Math.abs(Math.round(deltaMm));
+    adjustSelectedTransomEdge(edge, signedDelta);
+    setCommandStatus(`Secili satir ${operation === "trim" ? "trim" : "extend"} ${edge} ${Math.abs(Math.round(deltaMm))} mm uygulandi`);
+    return true;
+  }
+
+  function applyCenterCommand(mode: "panel" | "row") {
+    if (mode === "row") {
+      if (transomCenterDelta === null) {
+        setCommandStatus("Secili satir ortalanamiyor");
+        return false;
+      }
+      centerSelectedTransom();
+      setCommandStatus("Secili satir komsu satirlar arasinda ortalandi");
+      return true;
+    }
+
+    if (!activePanelBlockRefs.length || panelCenterDelta === null) {
+      setCommandStatus("Secili panel blogu ortalanamiyor");
+      return false;
+    }
+
+    centerPanelBlock(activePanelBlockRefs);
+    setCommandStatus(`${activePanelBlockRefs.length > 1 ? "Secili blok" : "Secili panel"} satir icinde ortalandi`);
+    return true;
+  }
+
+  function applyAlignCommand(position: "left" | "right" | "center" | "top" | "bottom" | "middle") {
+    if (position === "center") {
+      return applyCenterCommand("panel");
+    }
+
+    if (position === "middle") {
+      return applyCenterCommand("row");
+    }
+
+    if (position === "left" || position === "right") {
+      if (!panelShiftRange || !activePanelBlockRefs.length) {
+        setCommandStatus("Secili panel blogu yatay hizalamaya uygun degil");
+        return false;
+      }
+      const delta = position === "left" ? panelShiftRange.min : panelShiftRange.max;
+      if (!delta) {
+        setCommandStatus(`Secili blok zaten ${position === "left" ? "sol" : "sag"} sinira yakin`);
+        return false;
+      }
+      shiftPanelBlockBy(activePanelBlockRefs, delta);
+      setCommandStatus(`${activePanelBlockRefs.length > 1 ? "Secili blok" : "Secili panel"} ${position === "left" ? "sola" : "saga"} hizalandi`);
+      return true;
+    }
+
+    if (!transomShiftRange) {
+      setCommandStatus("Secili satir dikey hizalamaya uygun degil");
+      return false;
+    }
+    const delta = position === "top" ? transomShiftRange.min : transomShiftRange.max;
+    if (!delta) {
+      setCommandStatus(`Secili satir zaten ${position === "top" ? "ust" : "alt"} sinira yakin`);
+      return false;
+    }
+    shiftSelectedTransomBy(delta);
+    setCommandStatus(`Secili satir ${position === "top" ? "uste" : "alta"} hizalandi`);
+    return true;
+  }
+
+  function buildSelectedTransomPanelRefs() {
+    const refs: PanelRef[] = [];
+    selectedTransomRefs.forEach((transomId) => {
+      const transom = design.transoms.find((item) => item.id === transomId);
+      const anchorPanel = transom?.panels[0];
+      if (anchorPanel) {
+        refs.push({ transomId, panelId: anchorPanel.id });
+      }
+    });
+    return refs;
+  }
+
+  function applyDistributeCommand(mode: "panel" | "row") {
+    if (mode === "row") {
+      const refs = buildSelectedTransomPanelRefs();
+      if (refs.length >= 2) {
+        equalizeTransomsByRefs(refs);
+        setCommandStatus("Secili satirlar esit dagitildi");
+        return true;
+      }
+      if (design.transoms.length >= 2) {
+        equalizeAllTransomHeights();
+        setCommandStatus("Tum satirlar esit dagitildi");
+        return true;
+      }
+      setCommandStatus("Dagitilacak yeterli satir yok");
+      return false;
+    }
+
+    if (activePanelDistributionRefs.length >= 2) {
+      equalizePanelsByRefs(activePanelDistributionRefs);
+      setCommandStatus("Secili paneller esit dagitildi");
+      return true;
+    }
+
+    if (selectedTransom?.panels.length && selectedTransom.panels.length >= 2) {
+      equalizeSelectedRowPanels();
+      setCommandStatus("Aktif satirdaki paneller esit dagitildi");
+      return true;
+    }
+
+    setCommandStatus("Dagitilacak yeterli panel yok");
+    return false;
+  }
+
+  function applyMatchCommand(mode: "panel" | "row") {
+    if (mode === "row") {
+      const applied = applyDistributeCommand("row");
+      if (applied) {
+        setCommandStatus("Satir yukseklikleri match edildi");
+      }
+      return applied;
+    }
+
+    const applied = applyDistributeCommand("panel");
+    if (applied) {
+      setCommandStatus("Panel genislikleri match edildi");
+    }
+    return applied;
+  }
+
+  function applySelectedMullionPreset(action: string) {
+    if (selectedObject?.type !== "mullion") {
+      setCommandStatus("Secili dikey kayit bulunamadi");
+      return false;
+    }
+
+    const transom = design.transoms.find((item) => item.id === selectedObject.transomId);
+    if (!transom) {
+      setCommandStatus("Kayit satiri bulunamadi");
+      return false;
+    }
+
+    const panelIndex = transom.panels.findIndex((item) => item.id === selectedObject.panelId);
+    if (panelIndex === -1 || panelIndex >= transom.panels.length - 1) {
+      setCommandStatus("Kayit komsusu bulunamadi");
+      return false;
+    }
+
+    const leftPanel = transom.panels[panelIndex];
+    const rightPanel = transom.panels[panelIndex + 1];
+    if (!leftPanel || !rightPanel) {
+      setCommandStatus("Kayit komsusu bulunamadi");
+      return false;
+    }
+
+    const totalWidth = leftPanel.width + rightPanel.width;
+    if (action === "nudge-left") {
+      setPanelWidthById(transom.id, leftPanel.id, leftPanel.width - 50);
+      setCommandStatus("Dikey kayit 50 mm sola kaydirildi");
+      return true;
+    }
+    if (action === "nudge-right") {
+      setPanelWidthById(transom.id, leftPanel.id, leftPanel.width + 50);
+      setCommandStatus("Dikey kayit 50 mm saga kaydirildi");
+      return true;
+    }
+
+    const ratioMap: Record<string, number> = {
+      "ratio-50": 0.5,
+      "ratio-33": 1 / 3,
+      "ratio-67": 2 / 3
+    };
+    if (action in ratioMap) {
+      const nextWidth = clamp(Math.round(totalWidth * ratioMap[action]), 100, totalWidth - 100);
+      setPanelWidthById(transom.id, leftPanel.id, nextWidth);
+      setCommandStatus(`Dikey kayit ${Math.round((nextWidth / totalWidth) * 100)}/${Math.round(((totalWidth - nextWidth) / totalWidth) * 100)} oranina ayarlandi`);
+      return true;
+    }
+
+    if (action === "equalize") {
+      const nextWidth = Math.round(totalWidth / 2);
+      setPanelWidthById(transom.id, leftPanel.id, nextWidth);
+      setCommandStatus("Dikey kayit 50/50 olarak dengelendi");
+      return true;
+    }
+
+    return false;
+  }
+
+  function applySelectedTransomPreset(action: string) {
+    if (selectedObject?.type !== "transom-bar") {
+      setCommandStatus("Secili yatay kayit bulunamadi");
+      return false;
+    }
+
+    const transomIndex = design.transoms.findIndex((item) => item.id === selectedObject.transomId);
+    if (transomIndex === -1 || transomIndex >= design.transoms.length - 1) {
+      setCommandStatus("Yatay kayit komsusu bulunamadi");
+      return false;
+    }
+
+    const topTransom = design.transoms[transomIndex];
+    const bottomTransom = design.transoms[transomIndex + 1];
+    const totalHeight = topTransom.height + bottomTransom.height;
+
+    if (action === "nudge-up") {
+      setTransomHeightById(topTransom.id, topTransom.height - 50);
+      setCommandStatus("Yatay kayit 50 mm yukari alindi");
+      return true;
+    }
+    if (action === "nudge-down") {
+      setTransomHeightById(topTransom.id, topTransom.height + 50);
+      setCommandStatus("Yatay kayit 50 mm asagi alindi");
+      return true;
+    }
+
+    const ratioMap: Record<string, number> = {
+      "ratio-50": 0.5,
+      "ratio-33": 1 / 3,
+      "ratio-67": 2 / 3
+    };
+    if (action in ratioMap) {
+      const nextHeight = clamp(Math.round(totalHeight * ratioMap[action]), 150, totalHeight - 150);
+      setTransomHeightById(topTransom.id, nextHeight);
+      setCommandStatus(`Yatay kayit ${Math.round((nextHeight / totalHeight) * 100)}/${Math.round(((totalHeight - nextHeight) / totalHeight) * 100)} oranina ayarlandi`);
+      return true;
+    }
+
+    if (action === "equalize") {
+      const nextHeight = Math.round(totalHeight / 2);
+      setTransomHeightById(topTransom.id, nextHeight);
+      setCommandStatus("Yatay kayit 50/50 olarak dengelendi");
+      return true;
+    }
+
+    return false;
+  }
+
   function runCadCommand(rawValue: string) {
     const source = rawValue.trim();
     if (!source) {
       return;
     }
 
+    rememberCommand(source);
+
     const [commandRaw, ...rest] = source.split(/\s+/);
     const command = commandRaw.toLowerCase();
     const args = rest.map((item) => item.toLowerCase());
     const numericValue = Number(args.join(" ").replace(",", "."));
+    const firstNumeric = Number((args[0] ?? "").replace(",", "."));
+    const secondNumeric = Number((args[1] ?? "").replace(",", "."));
+    const thirdNumeric = Number((args[2] ?? "").replace(",", "."));
     const currentValue = getCommandTargetCurrentValue(commandTarget);
 
     if (applyLibraryShortcut(command)) {
@@ -590,10 +1264,167 @@ function App() {
       }
     }
 
-    if ((command === "offset" || command === "off") && currentValue !== null && Number.isFinite(numericValue)) {
-      applyCommandDimension(Math.max(1, Math.round(currentValue + numericValue)));
+    if (command === "osnap") {
+      if (!args[0] || args[0] === "on" || args[0] === "off") {
+        const nextValue = !args[0] ? !osnapEnabled : args[0] === "on";
+        setOsnapEnabled(nextValue);
+        setCommandStatus(`OSNAP ${nextValue ? "acildi" : "kapandi"}`);
+        setCommandQuery("");
+        return;
+      }
+
+      const modeMap: Record<string, keyof OsnapModes> = {
+        end: "endpoint",
+        endpoint: "endpoint",
+        mid: "midpoint",
+        midpoint: "midpoint",
+        cen: "center",
+        center: "center",
+        int: "intersection",
+        intersection: "intersection"
+      };
+      const nextMode = modeMap[args[0]];
+      if (nextMode) {
+        setOsnapModes((current) => ({
+          ...current,
+          [nextMode]: !current[nextMode]
+        }));
+        setCommandStatus(`OSNAP ${args[0].toUpperCase()} degisti`);
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "ortho") {
+      const nextValue = !args[0] ? !orthoMode : args[0] === "on" || args[0] === "1";
+      setOrthoMode(nextValue);
+      setCommandStatus(`ORTHO ${nextValue ? "acik" : "kapali"}`);
       setCommandQuery("");
       return;
+    }
+
+    if (command === "polar") {
+      if (!args[0] || args[0] === "on" || args[0] === "off") {
+        const nextValue = !args[0] ? !polarMode : args[0] === "on";
+        setPolarMode(nextValue);
+        setCommandStatus(`POLAR ${nextValue ? `${polarAngle}° acik` : "kapali"}`);
+        setCommandQuery("");
+        return;
+      }
+
+      if (Number.isFinite(firstNumeric) && firstNumeric > 0) {
+        const nextAngle = clamp(Math.round(firstNumeric), 5, 90);
+        setPolarAngle(nextAngle);
+        setPolarMode(true);
+        setCommandStatus(`POLAR aci ${nextAngle}° yapildi`);
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if ((command === "offset" || command === "off") && (args[0] === "panel" || args[0] === "row" || args[0] === "block") && Number.isFinite(secondNumeric) && secondNumeric !== 0) {
+      const count = Number.isFinite(thirdNumeric) && thirdNumeric >= 1 ? Math.round(thirdNumeric) : 1;
+      if (args[0] === "row") {
+        offsetSelectedTransomPattern(secondNumeric, count);
+        setCommandStatus(`Secili satir ${Math.abs(Math.round(secondNumeric))} mm offset ritmiyle bolundu`);
+      } else {
+        const useBlockOffset =
+          args[0] === "block" || (multiSelection.length > 1 && multiSelectionInfo?.sameTransom && multiSelectionInfo.contiguous);
+        if (useBlockOffset) {
+          offsetPanelGroupPattern(useBlockOffset && multiSelection.length > 1 ? multiSelection : activePanelBlockRefs, secondNumeric, count);
+          setCommandStatus(`Secili blok ${Math.abs(Math.round(secondNumeric))} mm offset ritmiyle bolundu`);
+        } else {
+          offsetSelectedPanelPattern(secondNumeric, count);
+          setCommandStatus(`Secili panel ${Math.abs(Math.round(secondNumeric))} mm offset ritmiyle bolundu`);
+        }
+      }
+      setCommandQuery("");
+      return;
+    }
+
+    if ((command === "offset" || command === "off") && Number.isFinite(firstNumeric) && firstNumeric !== 0) {
+      setInteractivePlacement({
+        type: "offset",
+        delta: Math.round(firstNumeric),
+        count: Number.isFinite(secondNumeric) && secondNumeric >= 2 ? Math.round(secondNumeric) : undefined
+      });
+      setCommandStatus(
+        Number.isFinite(secondNumeric) && secondNumeric >= 2
+          ? "Referans cizgiyi sec: paralel guide zinciri olusturulacak"
+          : "Referans cizgiyi sec: kayit, satir ayirici, kasa veya guide"
+      );
+      setCommandQuery("");
+      return;
+    }
+
+    if ((command === "trim" || command === "extend") && args[0]) {
+      const operation = command as "trim" | "extend";
+      const edge = args[0];
+      const amount = Number((args[1] ?? "").replace(",", "."));
+      if (["left", "right"].includes(edge) && Number.isFinite(amount) && amount > 0) {
+        if (applyPanelEdgeAdjust(edge as "left" | "right", amount, operation)) {
+          setCommandQuery("");
+          return;
+        }
+      }
+      if (["top", "bottom"].includes(edge) && Number.isFinite(amount) && amount > 0) {
+        if (applyTransomEdgeAdjust(edge as "top" | "bottom", amount, operation)) {
+          setCommandQuery("");
+          return;
+        }
+      }
+    }
+
+    if (command === "center" || command === "centre") {
+      const mode = args[0] === "row" || args[0] === "rows" ? "row" : "panel";
+      if (applyCenterCommand(mode)) {
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "align" && args[0]) {
+      const axis = args[0];
+      const normalized =
+        axis === "left" || axis === "start"
+          ? "left"
+          : axis === "right" || axis === "end"
+            ? "right"
+            : axis === "center" || axis === "centre"
+              ? "center"
+              : axis === "top"
+                ? "top"
+                : axis === "bottom"
+                  ? "bottom"
+                  : axis === "middle" || axis === "mid"
+                    ? "middle"
+                    : null;
+      if (normalized && applyAlignCommand(normalized)) {
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "distribute" || command === "dist") {
+      const mode =
+        args[0] === "row" || args[0] === "rows" || args[0] === "height"
+          ? "row"
+          : "panel";
+      if (applyDistributeCommand(mode)) {
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "match" && args[0]) {
+      const mode =
+        args[0] === "height" || args[0] === "row" || args[0] === "rows"
+          ? "row"
+          : "panel";
+      if (applyMatchCommand(mode)) {
+        setCommandQuery("");
+        return;
+      }
     }
 
     if (command === "splitv" || command === "sv") {
@@ -611,8 +1442,17 @@ function App() {
     }
 
     if (command === "mirror") {
-      mirrorSelectedRow();
-      setCommandStatus("Secili satir aynalandi");
+      const axis = args[0];
+      if (axis === "h" || axis === "horizontal") {
+        mirrorTransomStack();
+        setCommandStatus("Satir istifi yatay eksende aynalandi");
+      } else if (axis === "v" || axis === "vertical") {
+        mirrorSelectedRow();
+        setCommandStatus("Secili satir dikey eksende aynalandi");
+      } else {
+        setInteractivePlacement({ type: "mirror", phase: "axis" });
+        setCommandStatus("Ayna eksenini sec: dikey veya yatay eksen cizgisine tikla");
+      }
       setCommandQuery("");
       return;
     }
@@ -678,9 +1518,138 @@ function App() {
       return;
     }
 
-    if (command === "array" && Number.isFinite(numericValue) && numericValue >= 2) {
-      arraySelectedPanel(Math.round(numericValue));
-      setCommandStatus(`${Math.round(numericValue)}'lu panel dizisi olusturuldu`);
+    if (command === "move" && Number.isFinite(firstNumeric) && firstNumeric !== 0) {
+      if (applyMoveDisplacement(firstNumeric, "panel")) {
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "move" && (args[0] === "row" || args[0] === "rows") && Number.isFinite(secondNumeric) && secondNumeric !== 0) {
+      if (applyMoveDisplacement(secondNumeric, "row")) {
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "grid" || (command === "array" && args[0] === "grid")) {
+      const columnSource = command === "grid" ? Number((args[0] ?? "").replace(",", ".")) : Number((args[1] ?? "").replace(",", "."));
+      const rowSource = command === "grid" ? Number((args[1] ?? "").replace(",", ".")) : Number((args[2] ?? "").replace(",", "."));
+      const columnStepSource = command === "grid" ? Number((args[2] ?? "").replace(",", ".")) : Number((args[3] ?? "").replace(",", "."));
+      const rowStepSource = command === "grid" ? Number((args[3] ?? "").replace(",", ".")) : Number((args[4] ?? "").replace(",", "."));
+
+      if (Number.isFinite(columnSource) && columnSource >= 2 && Number.isFinite(rowSource) && rowSource >= 2) {
+        const columns = Math.round(columnSource);
+        const rows = Math.round(rowSource);
+        const columnStepMm = Number.isFinite(columnStepSource) && columnStepSource > 1 ? Math.round(columnStepSource) : undefined;
+        const rowStepMm = Number.isFinite(rowStepSource) && rowStepSource > 1 ? Math.round(rowStepSource) : undefined;
+
+        arraySelectedGrid(columns, rows, columnStepMm, rowStepMm);
+        setCommandStatus(
+          columnStepMm || rowStepMm
+            ? `${columns}x${rows} grid modulu ritim kontrollu olusturuldu`
+            : `${columns}x${rows} grid modulu olusturuldu`
+        );
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "array") {
+      const mode = args[0] === "row" || args[0] === "rows" ? "row" : args[0] === "col" || args[0] === "column" || args[0] === "columns" ? "panel" : "panel";
+      const countSource = mode === "panel" && Number.isFinite(numericValue) ? numericValue : Number((args[1] ?? "").replace(",", "."));
+      const stepSource = mode === "panel" ? Number((args[1] ?? "").replace(",", ".")) : Number((args[2] ?? "").replace(",", "."));
+      if (Number.isFinite(countSource) && countSource >= 2) {
+        const count = Math.round(countSource);
+        const stepMm = Number.isFinite(stepSource) && stepSource > 1 ? Math.round(stepSource) : undefined;
+        if (mode === "row") {
+          arraySelectedTransom(count, stepMm);
+          setCommandStatus(
+            stepMm
+              ? `${count}'li satir dizisi ${stepMm} mm ritimle olusturuldu`
+              : `${count}'li satir dizisi olusturuldu`
+          );
+        } else {
+          arraySelectedPanel(count, stepMm);
+          setCommandStatus(
+            stepMm
+              ? `${count}'lu panel dizisi ${stepMm} mm ritimle olusturuldu`
+              : `${count}'lu panel dizisi olusturuldu`
+          );
+        }
+        setCommandQuery("");
+        return;
+      }
+    }
+
+    if (command === "copy" && Number.isFinite(firstNumeric) && firstNumeric >= 2) {
+      if (multiSelection.length > 1 && (!multiSelectionInfo?.sameTransom || !multiSelectionInfo.contiguous)) {
+        setCommandStatus("Coklu copy icin secim ayni satirda bitisik panellerden olusmali");
+        setCommandQuery("");
+        return;
+      }
+
+      setInteractivePlacement({
+        type: "copy",
+        mode: "panel",
+        phase: "base",
+        repeatCount: Math.round(firstNumeric),
+        stepMm: Number.isFinite(secondNumeric) && secondNumeric > 1 ? Math.round(secondNumeric) : undefined,
+        axisLock: null,
+        lockedDistanceMm: null,
+        lockedVectorMm: null
+      });
+      setCommandStatus(`Kaynak noktayi sec: ${Math.round(firstNumeric)} adet panel kopyasi hazirlaniyor`);
+      setCommandQuery("");
+      return;
+    }
+
+    if (command === "copy" && (args[0] === "row" || args[0] === "rows") && Number.isFinite(secondNumeric) && secondNumeric >= 2) {
+      setInteractivePlacement({
+        type: "copy",
+        mode: "row",
+        phase: "base",
+        repeatCount: Math.round(secondNumeric),
+        stepMm: Number.isFinite(thirdNumeric) && thirdNumeric > 1 ? Math.round(thirdNumeric) : undefined,
+        axisLock: null,
+        lockedDistanceMm: null,
+        lockedVectorMm: null
+      });
+      setCommandStatus(`Kaynak noktayi sec: ${Math.round(secondNumeric)} adet satir kopyasi hazirlaniyor`);
+      setCommandQuery("");
+      return;
+    }
+
+    if (command === "copy" && !args[0]) {
+      if (multiSelection.length > 1 && (!multiSelectionInfo?.sameTransom || !multiSelectionInfo.contiguous)) {
+        setCommandStatus("Coklu copy icin secim ayni satirda bitisik panellerden olusmali");
+        setCommandQuery("");
+        return;
+      }
+      const mode = selectedObject?.type === "transom-bar" ? "row" : "panel";
+      setInteractivePlacement({ type: "copy", mode, phase: "base", axisLock: null, lockedDistanceMm: null, lockedVectorMm: null });
+      setCommandStatus(
+        mode === "row"
+          ? "Kaynak noktayi sec: secili satirdan referans alinacak"
+          : "Kaynak noktayi sec: secili panelden referans alinacak"
+      );
+      setCommandQuery("");
+      return;
+    }
+
+    if (command === "move" && !args[0]) {
+      if (multiSelection.length > 1 && (!multiSelectionInfo?.sameTransom || !multiSelectionInfo.contiguous)) {
+        setCommandStatus("Coklu move icin secim ayni satirda bitisik panellerden olusmali");
+        setCommandQuery("");
+        return;
+      }
+      const mode = selectedObject?.type === "transom-bar" ? "row" : "panel";
+      setInteractivePlacement({ type: "move", mode, phase: "base", axisLock: null, lockedDistanceMm: null, lockedVectorMm: null });
+      setCommandStatus(
+        mode === "row"
+          ? "Kaynak noktayi sec: tasinacak satiri referansla"
+          : "Kaynak noktayi sec: tasinacak paneli referansla"
+      );
       setCommandQuery("");
       return;
     }
@@ -714,7 +1683,7 @@ function App() {
     }
 
     if (command === "help" || command === "?") {
-      setCommandStatus("Komutlar: set 900, offset -50, sv, sh, mirror, array 3, guide v 600, guide h 900, layer guides off, lib triple");
+      setCommandStatus("Komutlar: set 900, move 120, move row -80, trim left 80, extend right 60, align left/right/top/bottom/center, distribute, distribute rows, match width, match height, center, center row, copy, copy 3 50, offset -50 3, offset panel 300 3, offset block 300 2, offset row 400 2, mirror, array 4 25, array row 3 50, array grid 3 2 25 50, guide v 600, osnap, ortho, polar 45, lib triple. Placement: X/Y kilit, F sifirla, F3 OSNAP, F8 ORTHO, F10 POLAR, mm veya dx,dy vektor lock.");
       setCommandQuery("");
       return;
     }
@@ -838,6 +1807,134 @@ function App() {
         design.transoms.find((item) => item.id === nextObject.transomId)?.panels.find((item) => item.id === nextObject.panelId)?.width ?? 0
       } mm`
     });
+  }
+
+  function applyInteractiveCanvasTarget(target: InteractiveCanvasTarget) {
+    if (!interactivePlacement) {
+      return;
+    }
+
+    if (target.kind === "base-point") {
+      if (interactivePlacement.type === "copy" || interactivePlacement.type === "move") {
+        setInteractivePlacement({
+          ...interactivePlacement,
+          phase: "target",
+          basePoint: target.point
+        });
+        setCommandStatus(
+          interactivePlacement.type === "copy"
+            ? "Hedef noktayi sec: X/Y ile eksen kilitle, mm girerek mesafe lock koy"
+            : "Hedef noktayi sec: X/Y ile eksen kilitle, mm girerek mesafe lock koy"
+        );
+      }
+      return;
+    }
+
+    if (target.kind === "mirror-axis") {
+      if (target.axis === "horizontal") {
+        mirrorTransomStack();
+        setCommandStatus("Satir istifi yatay eksende aynalandi");
+      } else {
+        mirrorSelectedRow();
+        setCommandStatus("Secili satir dikey eksende aynalandi");
+      }
+      setInteractivePlacement(null);
+      return;
+    }
+
+    if (target.kind === "offset-target" && interactivePlacement.type === "offset") {
+      if (interactivePlacement.count && interactivePlacement.count >= 2 && target.guideMeta) {
+        const limit =
+          target.guideMeta.orientation === "vertical"
+            ? design.totalWidth
+            : design.totalHeight;
+        Array.from({ length: interactivePlacement.count }, (_, index) => {
+          const position = target.guideMeta!.positionMm + interactivePlacement.delta * (index + 1);
+          if (position >= 0 && position <= limit) {
+            addReferenceGuide(
+              target.guideMeta!.orientation,
+              position,
+              `${target.guideMeta!.orientation === "vertical" ? "V" : "H"} ${Math.round(position)}`
+            );
+          }
+        });
+        setCommandStatus(`${interactivePlacement.count} paralel guide olusturuldu`);
+      } else {
+        const currentValue = getCommandTargetCurrentValue(target.target);
+        if (currentValue !== null) {
+          applyCommandDimension(Math.max(1, Math.round(currentValue + interactivePlacement.delta)), target.target);
+        }
+      }
+      setInteractivePlacement(null);
+      return;
+    }
+
+    if ((interactivePlacement.type === "copy" || interactivePlacement.type === "move") && interactivePlacement.phase === "target") {
+      if (target.kind === "panel") {
+        if (interactivePlacement.type === "copy") {
+          if (multiSelection.length > 1 && multiSelectionInfo?.sameTransom && multiSelectionInfo.contiguous) {
+            if (interactivePlacement.repeatCount && interactivePlacement.repeatCount >= 2) {
+              copyPanelGroupRepeatedToTarget(
+                multiSelection,
+                target.transomId,
+                target.panelId,
+                target.side,
+                interactivePlacement.repeatCount,
+                interactivePlacement.stepMm
+              );
+              setCommandStatus(`${interactivePlacement.repeatCount} adet panel blogu hedefe kopyalandi`);
+            } else {
+              copyPanelGroupToTarget(multiSelection, target.transomId, target.panelId, target.side);
+              setCommandStatus(`Secili panel blogu ${target.side === "left" ? "sol" : "sag"} hedefe kopyalandi`);
+            }
+          } else {
+            if (interactivePlacement.repeatCount && interactivePlacement.repeatCount >= 2) {
+              copySelectedPanelRepeatedToTarget(
+                target.transomId,
+                target.panelId,
+                target.side,
+                interactivePlacement.repeatCount,
+                interactivePlacement.stepMm
+              );
+              setCommandStatus(`${interactivePlacement.repeatCount} adet panel hedefe kopyalandi`);
+            } else {
+              copySelectedPanelToTarget(target.transomId, target.panelId, target.side);
+              setCommandStatus(`Panel ${target.side === "left" ? "sol" : "sag"} hedefe kopyalandi`);
+            }
+          }
+        } else {
+          if (multiSelection.length > 1 && multiSelectionInfo?.sameTransom && multiSelectionInfo.contiguous) {
+            movePanelGroupToTarget(multiSelection, target.transomId, target.panelId, target.side);
+            setCommandStatus(`Secili panel blogu ${target.side === "left" ? "sol" : "sag"} konuma tasindi`);
+          } else {
+            moveSelectedPanelToTarget(target.transomId, target.panelId, target.side);
+            setCommandStatus(`Panel ${target.side === "left" ? "sol" : "sag"} konuma tasindi`);
+          }
+        }
+      }
+
+      if (target.kind === "row") {
+        if (interactivePlacement.type === "copy") {
+          if (interactivePlacement.repeatCount && interactivePlacement.repeatCount >= 2) {
+            copySelectedTransomRepeatedToTarget(
+              target.transomId,
+              target.side,
+              interactivePlacement.repeatCount,
+              interactivePlacement.stepMm
+            );
+            setCommandStatus(`${interactivePlacement.repeatCount} adet satir hedefe kopyalandi`);
+          } else {
+            copySelectedTransomToTarget(target.transomId, target.side);
+            setCommandStatus(`Satir ${target.side === "top" ? "ust" : "alt"} hedefe kopyalandi`);
+          }
+        } else {
+          moveSelectedTransomToTarget(target.transomId, target.side);
+          setCommandStatus(`Satir ${target.side === "top" ? "ust" : "alt"} konuma tasindi`);
+        }
+      }
+
+      setInteractivePlacement(null);
+    }
   }
 
   function getDiagnosticActions(diagnostic: DesignDiagnostic) {
@@ -980,6 +2077,30 @@ function App() {
         event.preventDefault();
         setZoom((value) => Math.max(0.4, Number((value - 0.1).toFixed(2))));
       }
+      if (event.key === "F3") {
+        event.preventDefault();
+        setOsnapEnabled((current) => {
+          const next = !current;
+          setCommandStatus(`OSNAP ${next ? "acildi" : "kapandi"}`);
+          return next;
+        });
+      }
+      if (event.key === "F8") {
+        event.preventDefault();
+        setOrthoMode((current) => {
+          const next = !current;
+          setCommandStatus(`ORTHO ${next ? "acik" : "kapali"}`);
+          return next;
+        });
+      }
+      if (event.key === "F10") {
+        event.preventDefault();
+        setPolarMode((current) => {
+          const next = !current;
+          setCommandStatus(`POLAR ${next ? `${polarAngle}° acik` : "kapali"}`);
+          return next;
+        });
+      }
       if (isTypingSurface) {
         return;
       }
@@ -987,6 +2108,54 @@ function App() {
         if (event.key === "Escape") {
           setCommandValue("");
           setCommandQuery("");
+          setInteractivePlacement(null);
+        }
+        if (
+          interactivePlacement &&
+          (interactivePlacement.type === "copy" || interactivePlacement.type === "move") &&
+          interactivePlacement.phase === "target"
+        ) {
+          if (event.key.toLowerCase() === "x") {
+            event.preventDefault();
+            updatePlacementLock((current) => ({
+              ...current,
+              axisLock: current.axisLock === "x" ? null : "x",
+              lockedVectorMm: null
+            }));
+            setCommandStatus("Yatay eksen kilidi guncellendi");
+            return;
+          }
+          if (event.key.toLowerCase() === "y") {
+            event.preventDefault();
+            updatePlacementLock((current) => ({
+              ...current,
+              axisLock: current.axisLock === "y" ? null : "y",
+              lockedVectorMm: null
+            }));
+            setCommandStatus("Dikey eksen kilidi guncellendi");
+            return;
+          }
+          if (event.key.toLowerCase() === "f") {
+            event.preventDefault();
+            updatePlacementLock((current) => ({
+              ...current,
+              axisLock: null,
+              lockedDistanceMm: null,
+              lockedVectorMm: null
+            }));
+            setCommandStatus("Placement kilitleri temizlendi");
+            return;
+          }
+        }
+        if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && panelShiftRange) {
+          event.preventDefault();
+          const step = (event.shiftKey ? snapMm * 5 : snapMm) * (event.key === "ArrowRight" ? 1 : -1);
+          applyMoveDisplacement(step, "panel");
+        }
+        if ((event.key === "ArrowUp" || event.key === "ArrowDown") && selectedObject?.type === "transom-bar" && transomShiftRange) {
+          event.preventDefault();
+          const step = (event.shiftKey ? snapMm * 5 : snapMm) * (event.key === "ArrowDown" ? 1 : -1);
+          applyMoveDisplacement(step, "row");
         }
         if (event.key.toLowerCase() === "v") {
           event.preventDefault();
@@ -1029,15 +2198,24 @@ function App() {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [
+    applyMoveDisplacement,
     deleteSelectedPanel,
     deleteSelectedTransom,
     equalizePanelsByRefs,
     equalizeTransomsByRefs,
+    interactivePlacement,
+    mirrorTransomStack,
     mirrorSelectedRow,
     multiSelection,
+    panelShiftRange,
     redo,
+    selectedObject,
     splitSelectedPanelVertical,
     splitSelectedTransomHorizontal,
+    snapMm,
+    polarAngle,
+    transomShiftRange,
+    updatePlacementLock,
     undo
   ]);
 
@@ -1316,13 +2494,27 @@ function App() {
               onToolModeChange={setToolMode}
               commandTarget={commandTarget}
               commandPreview={commandPreview}
+              panelShiftRange={panelShiftRange}
+              transomShiftRange={transomShiftRange}
+              activePanelPreviewCount={Math.max(activePanelBlockRefs.length, multiSelection.length)}
+              activeRowPreviewCount={selectedTransomRefs.length}
+              interactivePlacement={interactivePlacement}
               onCommandTargetChange={setCommandTarget}
+              onApplyPlacement={applyInteractiveCanvasTarget}
+              onApplySelectedMullionPreset={applySelectedMullionPreset}
+              onApplySelectedTransomPreset={applySelectedTransomPreset}
+              onCancelPlacement={() => setInteractivePlacement(null)}
               onSplitVertical={splitSelectedPanelVertical}
               onSplitHorizontal={splitSelectedTransomHorizontal}
               onDeletePanel={deleteSelectedPanel}
               zoom={zoom}
               pan={pan}
               snapMm={snapMm}
+              osnapEnabled={osnapEnabled}
+              osnapModes={osnapModes}
+              orthoMode={orthoMode}
+              polarMode={polarMode}
+              polarAngle={polarAngle}
               onWheelZoom={(delta, reset) => {
                 if (reset) {
                   setZoom(1);
@@ -1353,11 +2545,19 @@ function App() {
               <span>{Math.round(zoom * 100)}%</span>
               <button className="zoom-button" onClick={() => setZoom((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))}>+</button>
               <button className="zoom-button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>100%</button>
+              <button className={`zoom-button mode ${osnapEnabled ? "active" : ""}`} onClick={() => setOsnapEnabled((current) => !current)}>OSNAP</button>
+              <button className={`zoom-button mode ${orthoMode ? "active" : ""}`} onClick={() => setOrthoMode((current) => !current)}>ORTHO</button>
+              <button className={`zoom-button mode ${polarMode ? "active" : ""}`} onClick={() => setPolarMode((current) => !current)}>
+                POLAR {polarAngle}°
+              </button>
             </div>
             <div className="command-bar">
               <span className="command-label">Komut</span>
               <strong>{toolMode}</strong>
               <span className="command-meta">Snap {snapMm} mm</span>
+              <span className="command-meta">OSNAP {osnapEnabled ? "On" : "Off"}</span>
+              <span className="command-meta">ORTHO {orthoMode ? "On" : "Off"}</span>
+              <span className="command-meta">POLAR {polarMode ? `${polarAngle}°` : "Off"}</span>
               <span className="command-meta">Zoom %{Math.round(zoom * 100)}</span>
               <span className="command-meta">Shift+Surukle: Kutu Secim</span>
               <span className={`health-chip ${designHealth.status}`}>
@@ -1367,25 +2567,47 @@ function App() {
                 <input
                   type="text"
                   value={commandQuery}
-                  placeholder="sv | offset -50 | mirror | array 3 | lib triple"
-                  onChange={(event) => setCommandQuery(event.target.value)}
+                  placeholder="align left | distribute | match width | move 120 | trim left 80 | help"
+                  onChange={(event) => {
+                    setCommandQuery(event.target.value);
+                    setCommandHistoryIndex(-1);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       runCadCommand(commandQuery);
+                    } else if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      browseCommandHistory("older");
+                    } else if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      browseCommandHistory("newer");
                     }
                   }}
                 />
                 <button className="tool-chip" onClick={() => runCadCommand(commandQuery)}>Calistir</button>
               </div>
-              {commandTarget && (
+              {(commandTarget ||
+                (interactivePlacement &&
+                  (interactivePlacement.type === "copy" || interactivePlacement.type === "move") &&
+                  interactivePlacement.phase === "target")) && (
                 <div className="command-input">
-                  <span className="command-meta">{commandTarget.label}</span>
+                  <span className="command-meta">
+                    {interactivePlacement &&
+                    (interactivePlacement.type === "copy" || interactivePlacement.type === "move") &&
+                    interactivePlacement.phase === "target"
+                      ? "Placement Kilidi (mm veya dx,dy)"
+                      : commandTarget?.label}
+                  </span>
                   <input
-                    type="number"
-                    min="1"
-                    step="1"
+                    type="text"
                     value={commandValue}
-                    placeholder="mm yaz"
+                    placeholder={
+                      interactivePlacement &&
+                      (interactivePlacement.type === "copy" || interactivePlacement.type === "move") &&
+                      interactivePlacement.phase === "target"
+                        ? "lock mm veya dx,dy"
+                        : "mm yaz"
+                    }
                     onChange={(event) => setCommandValue(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
@@ -1396,16 +2618,111 @@ function App() {
                   <button className="tool-chip" onClick={applyCommandValue}>Uygula</button>
                 </div>
               )}
+              {interactivePlacement &&
+                (interactivePlacement.type === "copy" || interactivePlacement.type === "move") &&
+                interactivePlacement.phase === "target" && (
+                  <div className="command-input placement-locks">
+                    <span className="command-meta">
+                      Placement Kilidi
+                      {interactivePlacement.lockedDistanceMm ? ` / ${interactivePlacement.lockedDistanceMm} mm` : ""}
+                      {interactivePlacement.lockedVectorMm ? ` / ${interactivePlacement.lockedVectorMm.dxMm},${interactivePlacement.lockedVectorMm.dyMm}` : ""}
+                      {interactivePlacement.axisLock ? ` / ${interactivePlacement.axisLock.toUpperCase()}` : " / Free"}
+                    </span>
+                    <button
+                      className={`tool-chip ${interactivePlacement.axisLock === "x" ? "active" : ""}`}
+                      onClick={() =>
+                        updatePlacementLock((current) => ({
+                          ...current,
+                          axisLock: current.axisLock === "x" ? null : "x",
+                          lockedVectorMm: null
+                        }))
+                      }
+                    >
+                      X Kilit
+                    </button>
+                    <button
+                      className={`tool-chip ${interactivePlacement.axisLock === "y" ? "active" : ""}`}
+                      onClick={() =>
+                        updatePlacementLock((current) => ({
+                          ...current,
+                          axisLock: current.axisLock === "y" ? null : "y",
+                          lockedVectorMm: null
+                        }))
+                      }
+                    >
+                      Y Kilit
+                    </button>
+                    <button
+                      className="tool-chip"
+                      onClick={() =>
+                        updatePlacementLock((current) => ({
+                          ...current,
+                          axisLock: null,
+                          lockedDistanceMm: null,
+                          lockedVectorMm: null
+                        }))
+                      }
+                    >
+                      Serbest
+                    </button>
+                  </div>
+                )}
               <div className="command-presets">
                 <button className="tool-chip" onClick={() => runCadCommand("mirror")}>Mirror</button>
+                <button className="tool-chip" onClick={() => runCadCommand("move")}>Move</button>
+                <button className="tool-chip" onClick={() => runCadCommand("move 120")}>Move +120</button>
+                <button className="tool-chip" onClick={() => runCadCommand("copy")}>Copy</button>
+                <button className="tool-chip" onClick={() => runCadCommand("copy 3 50")}>Copy x3</button>
                 <button className="tool-chip" onClick={() => runCadCommand("array 3")}>Array 3</button>
+                <button className="tool-chip" onClick={() => runCadCommand("array 4 25")}>Array 4/25</button>
+                <button className="tool-chip" onClick={() => runCadCommand("array row 3 50")}>Row 3/50</button>
+                <button className="tool-chip" onClick={() => runCadCommand("array grid 3 2 25 50")}>Grid 3x2</button>
                 <button className="tool-chip" onClick={() => runCadCommand("offset -50")}>-50</button>
+                <button className="tool-chip" onClick={() => runCadCommand("offset 50 3")}>Offset x3</button>
                 <button className="tool-chip" onClick={() => runCadCommand("offset 50")}>+50</button>
+                <button className="tool-chip" onClick={() => runCadCommand("offset panel 300 3")}>Panel Offset</button>
+                <button className="tool-chip" onClick={() => runCadCommand("offset block 300 2")}>Block Offset</button>
+                <button className="tool-chip" onClick={() => runCadCommand("offset row 400 2")}>Row Offset</button>
+                <button className="tool-chip" onClick={() => runCadCommand("trim left 80")}>Trim Left</button>
+                <button className="tool-chip" onClick={() => runCadCommand("trim right 80")}>Trim Right</button>
+                <button className="tool-chip" onClick={() => runCadCommand("extend left 60")}>Extend Left</button>
+                <button className="tool-chip" onClick={() => runCadCommand("extend right 60")}>Extend Right</button>
+                <button className="tool-chip" onClick={() => runCadCommand("align left")}>Align Left</button>
+                <button className="tool-chip" onClick={() => runCadCommand("align right")}>Align Right</button>
+                <button className="tool-chip" onClick={() => runCadCommand("center")}>Center Block</button>
+                <button className="tool-chip" onClick={() => runCadCommand("align top")}>Align Top</button>
+                <button className="tool-chip" onClick={() => runCadCommand("align bottom")}>Align Bottom</button>
+                <button className="tool-chip" onClick={() => runCadCommand("center row")}>Center Row</button>
+                <button className="tool-chip" onClick={() => runCadCommand("distribute")}>Distribute</button>
+                <button className="tool-chip" onClick={() => runCadCommand("distribute rows")}>Rows</button>
+                <button className="tool-chip" onClick={() => runCadCommand("match width")}>Match W</button>
+                <button className="tool-chip" onClick={() => runCadCommand("match height")}>Match H</button>
                 <button className="tool-chip" onClick={() => runCadCommand("lib double")}>Cift Kanat</button>
                 <button className="tool-chip" onClick={() => runCadCommand("lib slider")}>Surgu</button>
                 <button className="tool-chip" onClick={() => setToolMode("guide-vertical")}>V Guide</button>
                 <button className="tool-chip" onClick={() => setToolMode("guide-horizontal")}>H Guide</button>
+                <button className={`tool-chip ${osnapEnabled ? "active" : ""}`} onClick={() => runCadCommand("osnap")}>OSNAP</button>
+                <button className={`tool-chip ${orthoMode ? "active" : ""}`} onClick={() => runCadCommand("ortho")}>ORTHO</button>
+                <button className={`tool-chip ${polarMode ? "active" : ""}`} onClick={() => runCadCommand(`polar ${polarAngle === 45 ? 30 : polarAngle === 30 ? 90 : 45}`)}>
+                  POLAR {polarAngle}°
+                </button>
+                <button className={`tool-chip ${osnapModes.endpoint ? "active" : ""}`} onClick={() => runCadCommand("osnap end")}>END</button>
+                <button className={`tool-chip ${osnapModes.midpoint ? "active" : ""}`} onClick={() => runCadCommand("osnap mid")}>MID</button>
+                <button className={`tool-chip ${osnapModes.center ? "active" : ""}`} onClick={() => runCadCommand("osnap cen")}>CEN</button>
+                <button className={`tool-chip ${osnapModes.intersection ? "active" : ""}`} onClick={() => runCadCommand("osnap int")}>INT</button>
               </div>
+              {commandHistory.length > 0 && (
+                <div className="command-history-strip">
+                  {commandHistory
+                    .slice(-5)
+                    .reverse()
+                    .map((item, index) => (
+                      <button key={`${item}-${index}`} className="tool-chip command-history-chip" onClick={() => setCommandQuery(item)}>
+                        {item}
+                      </button>
+                    ))}
+                </div>
+              )}
               {commandStatus && <span className="command-status">{commandStatus}</span>}
               {commandPreview && (
                 <span className="command-meta preview-meta">
@@ -1437,6 +2754,12 @@ function App() {
                   <button className="tool-chip" onClick={() => applyOpeningTypeToPanels(multiSelection, "sliding")}>Toplu Surme</button>
                   <button className="tool-chip" onClick={() => equalizePanelsByRefs(multiSelection)}>E</button>
                   <button className="tool-chip" onClick={() => equalizeTransomsByRefs(multiSelection)}>R</button>
+                  {multiSelection.length > 1 && (
+                    <>
+                      <button className="tool-chip" onClick={() => runCadCommand("copy")}>Blok Copy</button>
+                      <button className="tool-chip" onClick={() => runCadCommand("move")}>Blok Move</button>
+                    </>
+                  )}
                   <button className="tool-chip" onClick={() => setMultiSelection([])}>Secimi Temizle</button>
                 </>
               )}
@@ -1703,6 +3026,13 @@ function App() {
                 <div className="focus-card bulk-card">
                   <strong>Coklu Secim</strong>
                   <span>{multiSelection.length} panel birlikte secili</span>
+                  <span>
+                    {multiSelectionInfo?.sameTransom
+                      ? multiSelectionInfo.contiguous
+                        ? "Ayni satirda bitisik blok"
+                        : "Ayni satirda daginik secim"
+                      : "Birden fazla satira dagilan secim"}
+                  </span>
                   <span>Komutlar: E = Genislik Esitle, R = Satir Dengele</span>
                   <span>
                     Toplam Cam Alani:{" "}
@@ -1716,8 +3046,11 @@ function App() {
                         return sum + calculatePanelArea(panel.width, transom.height);
                       }, 0)
                       .toFixed(2)}{" "}
-                    m²
+                    m2
                   </span>
+                  {multiSelectionInfo?.sameTransom && multiSelectionInfo.contiguous && (
+                    <span>Blok islemleri hazir: copy / move</span>
+                  )}
                 </div>
               )}
 
@@ -1764,13 +3097,13 @@ function App() {
                     <div className="material-card">
                       <strong>{glassSpec.label}</strong>
                       <span>Dizilim: {glassSpec.buildUp}</span>
-                      <span>Agirlik: {glassSpec.weightKgM2} kg/m²</span>
+                      <span>Agirlik: {glassSpec.weightKgM2} kg/m2</span>
                       <span>Sinif: {glassSpec.thermalClass}</span>
                     </div>
                     <div className="material-card">
                       <strong>{hardwareSpec.label}</strong>
                       <span>Maks. Kanat Agirligi: {hardwareSpec.maxSashWeightKg} kg</span>
-                      <span>Standart Menteşe: {hardwareSpec.hingeCount} adet</span>
+                      <span>Standart Mentese: {hardwareSpec.hingeCount} adet</span>
                     </div>
                   </div>
                 </>
@@ -2270,13 +3603,176 @@ function buildCommandPreview(query: string): CommandPreview | null {
   const parts = normalized.split(/\s+/).filter(Boolean);
   const [command, ...args] = parts;
   const numeric = Number((args[0] ?? "").replace(",", "."));
+  const secondaryNumeric = Number((args[1] ?? "").replace(",", "."));
+  const tertiaryNumeric = Number((args[2] ?? "").replace(",", "."));
+  const quaternaryNumeric = Number((args[3] ?? "").replace(",", "."));
 
   if (command === "mirror") {
-    return { type: "mirror" };
+    const axis = args[0];
+    if (axis === "h" || axis === "horizontal") {
+      return { type: "mirror", axis: "horizontal" };
+    }
+    if (axis === "v" || axis === "vertical") {
+      return { type: "mirror", axis: "vertical" };
+    }
+    return { type: "mirror", axis: "pick" };
+  }
+
+  if ((command === "grid" || (command === "array" && args[0] === "grid")) && parts.length >= 3) {
+    const columnSource = command === "grid" ? numeric : secondaryNumeric;
+    const rowSource = command === "grid" ? secondaryNumeric : tertiaryNumeric;
+    const columnStepSource = command === "grid" ? tertiaryNumeric : quaternaryNumeric;
+    const rowStepSource = Number((args[command === "grid" ? 3 : 4] ?? "").replace(",", "."));
+
+    if (Number.isFinite(columnSource) && columnSource >= 2 && Number.isFinite(rowSource) && rowSource >= 2) {
+      return {
+        type: "grid-array",
+        columns: Math.max(2, Math.min(8, Math.round(columnSource))),
+        rows: Math.max(2, Math.min(6, Math.round(rowSource))),
+        columnStepMm: Number.isFinite(columnStepSource) && columnStepSource > 1 ? Math.round(columnStepSource) : undefined,
+        rowStepMm: Number.isFinite(rowStepSource) && rowStepSource > 1 ? Math.round(rowStepSource) : undefined
+      };
+    }
+  }
+
+  if ((command === "offset" || command === "off") && (args[0] === "panel" || args[0] === "row" || args[0] === "block")) {
+    const mode = args[0] === "row" ? "row" : "panel";
+    const deltaSource = Number((args[1] ?? "").replace(",", "."));
+    const countSource = Number((args[2] ?? "").replace(",", "."));
+    if (Number.isFinite(deltaSource) && deltaSource !== 0) {
+      return {
+        type: "offset-pattern",
+        delta: Math.round(deltaSource),
+        count: Number.isFinite(countSource) && countSource >= 1 ? Math.max(1, Math.min(mode === "row" ? 6 : 8, Math.round(countSource))) : 1,
+        mode
+      };
+    }
+  }
+
+  if ((command === "trim" || command === "extend") && args[0]) {
+    const deltaSource = Number((args[1] ?? "").replace(",", "."));
+    if (Number.isFinite(deltaSource) && deltaSource > 0 && ["left", "right", "top", "bottom"].includes(args[0])) {
+      return {
+        type: "edge-adjust",
+        operation: command as "trim" | "extend",
+        edge: args[0] as "left" | "right" | "top" | "bottom",
+        delta: Math.round(deltaSource),
+        mode: args[0] === "top" || args[0] === "bottom" ? "row" : "panel"
+      };
+    }
+  }
+
+  if (command === "center" || command === "centre") {
+    return {
+      type: "center",
+      mode: args[0] === "row" || args[0] === "rows" ? "row" : "panel"
+    };
+  }
+
+  if (command === "align" && args[0]) {
+    if (args[0] === "left" || args[0] === "start") {
+      return { type: "align", mode: "panel", position: "start" };
+    }
+    if (args[0] === "right" || args[0] === "end") {
+      return { type: "align", mode: "panel", position: "end" };
+    }
+    if (args[0] === "center" || args[0] === "centre") {
+      return { type: "center", mode: "panel" };
+    }
+    if (args[0] === "top") {
+      return { type: "align", mode: "row", position: "start" };
+    }
+    if (args[0] === "bottom") {
+      return { type: "align", mode: "row", position: "end" };
+    }
+    if (args[0] === "middle" || args[0] === "mid") {
+      return { type: "center", mode: "row" };
+    }
+  }
+
+  if (command === "distribute" || command === "dist") {
+    return {
+      type: "distribute",
+      mode: args[0] === "row" || args[0] === "rows" || args[0] === "height" ? "row" : "panel",
+      label: "Distribute"
+    };
+  }
+
+  if (command === "match" && args[0]) {
+    return {
+      type: "distribute",
+      mode: args[0] === "height" || args[0] === "row" || args[0] === "rows" ? "row" : "panel",
+      label: "Match"
+    };
+  }
+
+  if (command === "move" && Number.isFinite(numeric) && numeric !== 0) {
+    return {
+      type: "move-displace",
+      delta: Math.round(numeric),
+      mode: "panel"
+    };
+  }
+
+  if (command === "move" && (args[0] === "row" || args[0] === "rows") && Number.isFinite(secondaryNumeric) && secondaryNumeric !== 0) {
+    return {
+      type: "move-displace",
+      delta: Math.round(secondaryNumeric),
+      mode: "row"
+    };
+  }
+
+  if (command === "copy" && Number.isFinite(numeric) && numeric >= 2) {
+    return {
+      type: "copy-series",
+      count: Math.max(2, Math.min(8, Math.round(numeric))),
+      stepMm: Number.isFinite(secondaryNumeric) && secondaryNumeric > 1 ? Math.round(secondaryNumeric) : undefined,
+      mode: "panel"
+    };
+  }
+
+  if (command === "copy" && (args[0] === "row" || args[0] === "rows")) {
+    return {
+      type: "copy-series",
+      count: Math.max(2, Math.min(6, Math.round(Number.isFinite(secondaryNumeric) ? secondaryNumeric : 2))),
+      stepMm: Number.isFinite(tertiaryNumeric) && tertiaryNumeric > 1 ? Math.round(tertiaryNumeric) : undefined,
+      mode: "row"
+    };
+  }
+
+  if ((command === "offset" || command === "off") && Number.isFinite(numeric) && numeric !== 0 && Number.isFinite(secondaryNumeric) && secondaryNumeric >= 2) {
+    return {
+      type: "offset-chain",
+      delta: Math.round(numeric),
+      count: Math.max(2, Math.min(8, Math.round(secondaryNumeric)))
+    };
   }
 
   if (command === "array" && Number.isFinite(numeric) && numeric >= 2) {
-    return { type: "array", count: Math.max(2, Math.min(8, Math.round(numeric))) };
+    return {
+      type: "array",
+      count: Math.max(2, Math.min(8, Math.round(numeric))),
+      stepMm: Number.isFinite(secondaryNumeric) && secondaryNumeric > 1 ? Math.round(secondaryNumeric) : undefined,
+      mode: "panel"
+    };
+  }
+
+  if (command === "array" && (args[0] === "row" || args[0] === "rows")) {
+    return {
+      type: "array",
+      count: Math.max(2, Math.min(6, Math.round(Number.isFinite(secondaryNumeric) ? secondaryNumeric : 2))),
+      stepMm: Number.isFinite(tertiaryNumeric) && tertiaryNumeric > 1 ? Math.round(tertiaryNumeric) : undefined,
+      mode: "row"
+    };
+  }
+
+  if (command === "array" && (args[0] === "col" || args[0] === "column" || args[0] === "columns")) {
+    return {
+      type: "array",
+      count: Math.max(2, Math.min(8, Math.round(Number.isFinite(secondaryNumeric) ? secondaryNumeric : 2))),
+      stepMm: Number.isFinite(tertiaryNumeric) && tertiaryNumeric > 1 ? Math.round(tertiaryNumeric) : undefined,
+      mode: "panel"
+    };
   }
 
   if (command === "offset" && Number.isFinite(numeric) && numeric !== 0) {
@@ -2292,21 +3788,69 @@ function buildCommandPreview(query: string): CommandPreview | null {
     }
   }
 
+  if (command === "move") {
+    return { type: "move", mode: args[0] === "row" ? "row" : "panel" };
+  }
+
   return null;
 }
 
 function formatCommandPreview(preview: CommandPreview) {
   switch (preview.type) {
     case "mirror":
-      return "Aynalama";
+      if (preview.axis === "pick") {
+        return "Ayna ekseni sec";
+      }
+      return `Aynalama ${preview.axis === "vertical" ? "Dikey Eksen" : "Yatay Eksen"}`;
     case "array":
-      return `Array ${preview.count}`;
+      return preview.stepMm
+        ? `Array ${preview.mode === "row" ? "Row" : "Col"} ${preview.count} / Step ${preview.stepMm}`
+        : `Array ${preview.mode === "row" ? "Row" : "Col"} ${preview.count}`;
+    case "grid-array":
+      if (preview.columnStepMm && preview.rowStepMm) {
+        return `Grid ${preview.columns}x${preview.rows} / ${preview.columnStepMm}-${preview.rowStepMm}`;
+      }
+      if (preview.columnStepMm) {
+        return `Grid ${preview.columns}x${preview.rows} / Col ${preview.columnStepMm}`;
+      }
+      if (preview.rowStepMm) {
+        return `Grid ${preview.columns}x${preview.rows} / Row ${preview.rowStepMm}`;
+      }
+      return `Grid ${preview.columns}x${preview.rows}`;
+    case "offset-pattern":
+      return `Offset ${preview.mode === "row" ? "Row" : "Panel"} ${preview.delta > 0 ? "+" : ""}${preview.delta} / ${preview.count}`;
+    case "edge-adjust":
+      return `${preview.operation === "trim" ? "Trim" : "Extend"} ${preview.mode === "row" ? "Row" : "Block"} ${preview.edge} ${preview.delta}`;
+    case "center":
+      return preview.mode === "row" ? "Center Row" : "Center Block";
+    case "align":
+      return `${preview.mode === "row" ? "Align Row" : "Align Block"} ${
+        preview.mode === "row"
+          ? preview.position === "start"
+            ? "Top"
+            : "Bottom"
+          : preview.position === "start"
+            ? "Left"
+            : "Right"
+      }`;
+    case "distribute":
+      return `${preview.label} ${preview.mode === "row" ? "Rows" : "Panels"}`;
+    case "copy-series":
+      return preview.stepMm
+        ? `Copy ${preview.mode === "row" ? "Row" : "Panel"} x${preview.count} / Step ${preview.stepMm}`
+        : `Copy ${preview.mode === "row" ? "Row" : "Panel"} x${preview.count}`;
+    case "move-displace":
+      return `Move ${preview.mode === "row" ? "Row" : "Panel"} ${preview.delta > 0 ? "+" : ""}${preview.delta}`;
+    case "offset-chain":
+      return `Offset ${preview.delta > 0 ? "+" : ""}${preview.delta} / ${preview.count} paralel`;
     case "offset":
       return `Offset ${preview.delta > 0 ? "+" : ""}${preview.delta}`;
     case "copy-panel":
       return `Panel ${preview.side === "left" ? "sol" : "sag"} kopya`;
     case "copy-row":
       return `Satir ${preview.side === "top" ? "ust" : "alt"} kopya`;
+    case "move":
+      return preview.mode === "row" ? "Satir tasi" : "Panel tasi";
   }
 }
 
@@ -2486,6 +4030,349 @@ function snapValue(value: number, step: number) {
   return Math.round(value / step) * step;
 }
 
+function parsePlacementVectorValue(value: string) {
+  const normalized = value.trim().replace("@", "").replace(";", ",");
+  if (!normalized.includes(",")) {
+    return null;
+  }
+  const [xSource, ySource] = normalized.split(",").map((item) => Number(item.trim().replace(",", ".")));
+  if (!Number.isFinite(xSource) || !Number.isFinite(ySource)) {
+    return null;
+  }
+  if (Math.abs(xSource) < 0.001 && Math.abs(ySource) < 0.001) {
+    return null;
+  }
+  return {
+    dxMm: Math.round(xSource),
+    dyMm: Math.round(ySource)
+  };
+}
+
+function appendRectOsnapCandidates(
+  candidates: OsnapCandidate[],
+  rect: { x: number; y: number; width: number; height: number },
+  modes: OsnapModes,
+  detail: string
+) {
+  const { x, y, width, height } = rect;
+  if (modes.endpoint) {
+    candidates.push(
+      { point: { x, y }, label: "END", detail, priority: 1 },
+      { point: { x: x + width, y }, label: "END", detail, priority: 1 },
+      { point: { x, y: y + height }, label: "END", detail, priority: 1 },
+      { point: { x: x + width, y: y + height }, label: "END", detail, priority: 1 }
+    );
+  }
+
+  if (modes.midpoint) {
+    candidates.push(
+      { point: { x: x + width / 2, y }, label: "MID", detail, priority: 2 },
+      { point: { x: x + width / 2, y: y + height }, label: "MID", detail, priority: 2 },
+      { point: { x, y: y + height / 2 }, label: "MID", detail, priority: 2 },
+      { point: { x: x + width, y: y + height / 2 }, label: "MID", detail, priority: 2 }
+    );
+  }
+
+  if (modes.center) {
+    candidates.push({
+      point: { x: x + width / 2, y: y + height / 2 },
+      label: "CEN",
+      detail,
+      priority: 3
+    });
+  }
+}
+
+function appendVerticalLineOsnapCandidates(
+  candidates: OsnapCandidate[],
+  x: number,
+  y1: number,
+  y2: number,
+  modes: OsnapModes,
+  detail: string
+) {
+  if (modes.endpoint) {
+    candidates.push(
+      { point: { x, y: y1 }, label: "END", detail, priority: 1 },
+      { point: { x, y: y2 }, label: "END", detail, priority: 1 }
+    );
+  }
+  if (modes.midpoint) {
+    candidates.push({
+      point: { x, y: (y1 + y2) / 2 },
+      label: "MID",
+      detail,
+      priority: 2
+    });
+  }
+}
+
+function appendHorizontalLineOsnapCandidates(
+  candidates: OsnapCandidate[],
+  x1: number,
+  x2: number,
+  y: number,
+  modes: OsnapModes,
+  detail: string
+) {
+  if (modes.endpoint) {
+    candidates.push(
+      { point: { x: x1, y }, label: "END", detail, priority: 1 },
+      { point: { x: x2, y }, label: "END", detail, priority: 1 }
+    );
+  }
+  if (modes.midpoint) {
+    candidates.push({
+      point: { x: (x1 + x2) / 2, y },
+      label: "MID",
+      detail,
+      priority: 2
+    });
+  }
+}
+
+function resolveOsnapCandidate(
+  worldPoint: { x: number; y: number } | null,
+  design: PvcDesign,
+  scale: number,
+  outerX: number,
+  outerY: number,
+  outerW: number,
+  outerH: number,
+  frameInset: number,
+  transomOffsets: number[],
+  modes: OsnapModes | null,
+  zoom: number,
+  technicalReferencePoints?: Array<{ x: number; y: number; detail: string }>,
+  technicalDetailPoints?: Array<{ x: number; y: number; detail: string }>
+) {
+  if (!worldPoint || !modes) {
+    return null;
+  }
+
+  const candidates: OsnapCandidate[] = [];
+  const verticalLines: Array<{ x: number; y1: number; y2: number; detail: string }> = [];
+  const horizontalLines: Array<{ x1: number; x2: number; y: number; detail: string }> = [];
+  const innerRect = {
+    x: outerX + frameInset,
+    y: outerY + frameInset,
+    width: outerW - frameInset * 2,
+    height: outerH - frameInset * 2
+  };
+
+  appendRectOsnapCandidates(candidates, { x: outerX, y: outerY, width: outerW, height: outerH }, modes, "Kasa");
+  appendRectOsnapCandidates(candidates, innerRect, modes, "Ic Kasa");
+  verticalLines.push(
+    { x: innerRect.x, y1: innerRect.y, y2: innerRect.y + innerRect.height, detail: "Ic Kasa Sol" },
+    { x: innerRect.x + innerRect.width, y1: innerRect.y, y2: innerRect.y + innerRect.height, detail: "Ic Kasa Sag" }
+  );
+  horizontalLines.push(
+    { x1: innerRect.x, x2: innerRect.x + innerRect.width, y: innerRect.y, detail: "Ic Kasa Ust" },
+    { x1: innerRect.x, x2: innerRect.x + innerRect.width, y: innerRect.y + innerRect.height, detail: "Ic Kasa Alt" }
+  );
+
+  design.transoms.forEach((transom, transomIndex) => {
+    let panelStartX = innerRect.x;
+    const topY = transomOffsets[transomIndex];
+    const bottomY = topY + transom.height * scale;
+    horizontalLines.push(
+      { x1: innerRect.x, x2: innerRect.x + innerRect.width, y: topY, detail: `Satir ${transomIndex + 1} Ust` },
+      { x1: innerRect.x, x2: innerRect.x + innerRect.width, y: bottomY, detail: `Satir ${transomIndex + 1} Alt` }
+    );
+    transom.panels.forEach((panel) => {
+      const width = panel.width * scale;
+      appendRectOsnapCandidates(
+        candidates,
+        {
+          x: panelStartX,
+          y: topY,
+          width,
+          height: transom.height * scale
+        },
+        modes,
+        `Panel ${panel.label}`
+      );
+      panelStartX += width;
+    });
+
+    let dividerX = innerRect.x;
+    transom.panels.slice(0, -1).forEach((panel, panelIndex) => {
+      dividerX += panel.width * scale;
+      verticalLines.push({
+        x: dividerX,
+        y1: topY,
+        y2: bottomY,
+        detail: `Dikey Kayit ${transomIndex + 1}.${panelIndex + 1}`
+      });
+    });
+  });
+
+  design.guides.forEach((guide) => {
+    if (guide.orientation === "vertical") {
+      verticalLines.push({
+        x: innerRect.x + guide.positionMm * scale,
+        y1: innerRect.y,
+        y2: innerRect.y + innerRect.height,
+        detail: `Guide ${guide.label}`
+      });
+    } else {
+      horizontalLines.push({
+        x1: innerRect.x,
+        x2: innerRect.x + innerRect.width,
+        y: innerRect.y + guide.positionMm * scale,
+        detail: `Guide ${guide.label}`
+      });
+    }
+  });
+
+  verticalLines.forEach((line) => appendVerticalLineOsnapCandidates(candidates, line.x, line.y1, line.y2, modes, line.detail));
+  horizontalLines.forEach((line) =>
+    appendHorizontalLineOsnapCandidates(candidates, line.x1, line.x2, line.y, modes, line.detail)
+  );
+
+  if (modes.intersection) {
+    verticalLines.forEach((verticalLine) => {
+      horizontalLines.forEach((horizontalLine) => {
+        if (
+          verticalLine.x >= horizontalLine.x1 - 0.1 &&
+          verticalLine.x <= horizontalLine.x2 + 0.1 &&
+          horizontalLine.y >= verticalLine.y1 - 0.1 &&
+          horizontalLine.y <= verticalLine.y2 + 0.1
+        ) {
+          candidates.push({
+            point: {
+              x: verticalLine.x,
+              y: horizontalLine.y
+            },
+            label: "INT",
+            detail: `${verticalLine.detail} x ${horizontalLine.detail}`,
+            priority: 0
+          });
+        }
+      });
+    });
+  }
+
+  technicalReferencePoints?.forEach((point) => {
+    candidates.push({
+      point: { x: point.x, y: point.y },
+      label: "INT",
+      detail: point.detail,
+      priority: 0
+    });
+  });
+
+  technicalDetailPoints?.forEach((point) => {
+    candidates.push({
+      point: { x: point.x, y: point.y },
+      label: "END",
+      detail: point.detail,
+      priority: 1
+    });
+  });
+
+  const threshold = Math.max(9, 16 / Math.max(0.4, zoom));
+  let nearest: { candidate: OsnapCandidate; distance: number } | null = null;
+
+  for (const candidate of candidates) {
+    const distance = Math.hypot(candidate.point.x - worldPoint.x, candidate.point.y - worldPoint.y);
+    if (distance > threshold) {
+      continue;
+    }
+
+    if (
+      !nearest ||
+      distance < nearest.distance - 0.001 ||
+      (Math.abs(distance - nearest.distance) < 0.001 && candidate.priority < nearest.candidate.priority)
+    ) {
+      nearest = { candidate, distance };
+    }
+  }
+
+  return nearest ? nearest.candidate : null;
+}
+
+function projectPlacementTelemetry(
+  placement: InteractivePlacement,
+  cursorPoint: { x: number; y: number } | null,
+  scale: number,
+  snapMm: number,
+  options?: {
+    orthoMode?: boolean;
+    polarMode?: boolean;
+    polarAngle?: number;
+    osnapLabel?: string | null;
+  }
+): PlacementTelemetry | null {
+  if (!cursorPoint || !placement || (placement.type !== "copy" && placement.type !== "move") || placement.phase !== "target" || !placement.basePoint) {
+    return null;
+  }
+
+  let dxMm = snapValue((cursorPoint.x - placement.basePoint.x) / scale, snapMm);
+  let dyMm = snapValue((cursorPoint.y - placement.basePoint.y) / scale, snapMm);
+  let trackingMode: PlacementTelemetry["trackingMode"] = "free";
+
+  if (placement.lockedVectorMm) {
+    dxMm = placement.lockedVectorMm.dxMm;
+    dyMm = placement.lockedVectorMm.dyMm;
+    trackingMode = "vector";
+  } else if (placement.axisLock === "x") {
+    dyMm = 0;
+  } else if (placement.axisLock === "y") {
+    dxMm = 0;
+  } else if (options?.orthoMode) {
+    trackingMode = "ortho";
+    if (Math.abs(dxMm) >= Math.abs(dyMm)) {
+      dyMm = 0;
+    } else {
+      dxMm = 0;
+    }
+  } else if (options?.polarMode) {
+    const rawDistance = Math.hypot(dxMm, dyMm);
+    if (rawDistance > 0.001) {
+      const angleStep = Math.max(5, options.polarAngle ?? 45);
+      const stepRad = (angleStep * Math.PI) / 180;
+      const snappedAngle = Math.round(Math.atan2(dyMm, dxMm) / stepRad) * stepRad;
+      dxMm = snapValue(Math.cos(snappedAngle) * rawDistance, snapMm);
+      dyMm = snapValue(Math.sin(snappedAngle) * rawDistance, snapMm);
+      trackingMode = "polar";
+    }
+  }
+
+  const rawDistance = Math.hypot(dxMm, dyMm);
+  if (placement.lockedDistanceMm && placement.lockedDistanceMm > 0) {
+    if (rawDistance < 0.001) {
+      if (placement.axisLock === "y") {
+        dyMm = placement.lockedDistanceMm;
+      } else {
+        dxMm = placement.lockedDistanceMm;
+      }
+    } else {
+      const factor = placement.lockedDistanceMm / rawDistance;
+      dxMm = snapValue(dxMm * factor, snapMm);
+      dyMm = snapValue(dyMm * factor, snapMm);
+    }
+  }
+
+  const point = {
+    x: placement.basePoint.x + dxMm * scale,
+    y: placement.basePoint.y + dyMm * scale
+  };
+
+  return {
+    point,
+    dxMm,
+    dyMm,
+    distanceMm: Math.round(Math.hypot(dxMm, dyMm)),
+    angleDeg: Math.round((Math.atan2(dyMm, dxMm) * 180) / Math.PI),
+    axisLock: placement.axisLock ?? null,
+    lockedDistanceMm: placement.lockedDistanceMm ?? null,
+    lockedVectorMm: placement.lockedVectorMm ?? null,
+    trackingMode,
+    osnapLabel: options?.osnapLabel ?? null
+  };
+}
+
 function buildBom(design: PvcDesign) {
   const openingPanels = design.transoms.flatMap((item) => item.panels).filter((panel) => panel.openingType !== "fixed").length;
   const glassAreaM2 = design.transoms.reduce(
@@ -2546,13 +4433,27 @@ function PvcCanvas({
   onToolModeChange,
   commandTarget,
   commandPreview,
+  panelShiftRange,
+  transomShiftRange,
+  activePanelPreviewCount,
+  activeRowPreviewCount,
+  interactivePlacement,
   onCommandTargetChange,
+  onApplyPlacement,
+  onApplySelectedMullionPreset,
+  onApplySelectedTransomPreset,
+  onCancelPlacement,
   onSplitVertical,
   onSplitHorizontal,
   onDeletePanel,
   zoom,
   pan,
   snapMm,
+  osnapEnabled,
+  osnapModes,
+  orthoMode,
+  polarMode,
+  polarAngle,
   onWheelZoom,
   onPanStart,
   onPanMove,
@@ -2575,13 +4476,27 @@ function PvcCanvas({
   onToolModeChange: (mode: ToolMode) => void;
   commandTarget: CommandTarget | null;
   commandPreview: CommandPreview | null;
+  panelShiftRange: { min: number; max: number } | null;
+  transomShiftRange: { min: number; max: number } | null;
+  activePanelPreviewCount: number;
+  activeRowPreviewCount: number;
+  interactivePlacement: InteractivePlacement;
   onCommandTargetChange: (target: CommandTarget | null) => void;
+  onApplyPlacement: (target: InteractiveCanvasTarget) => void;
+  onApplySelectedMullionPreset: (action: string) => boolean;
+  onApplySelectedTransomPreset: (action: string) => boolean;
+  onCancelPlacement: () => void;
   onSplitVertical: () => void;
   onSplitHorizontal: () => void;
   onDeletePanel: () => void;
   zoom: number;
   pan: { x: number; y: number };
   snapMm: number;
+  osnapEnabled: boolean;
+  osnapModes: OsnapModes;
+  orthoMode: boolean;
+  polarMode: boolean;
+  polarAngle: number;
   onWheelZoom: (delta: number, reset?: boolean) => void;
   onPanStart: (clientX: number, clientY: number) => void;
   onPanMove: (clientX: number, clientY: number) => void;
@@ -2707,16 +4622,37 @@ function PvcCanvas({
     () => new Set(multiSelection.map((panel) => `${panel.transomId}:${panel.panelId}`)),
     [multiSelection]
   );
-  const cursorMeasure = useMemo(() => {
+  const blockSelectionPreview = useMemo(
+    () => buildBlockSelectionPreview(design, multiSelection, scale, outerX + frameInset, transomOffsets),
+    [design, frameInset, multiSelection, outerX, scale, transomOffsets]
+  );
+  const worldCursor = useMemo(() => {
     if (!cursor) {
       return null;
     }
 
     return {
-      xMm: clamp(Math.round(((cursor.x - pan.x) / zoom - (outerX + frameInset)) / scale), 0, design.totalWidth),
-      yMm: clamp(Math.round(((cursor.y - pan.y) / zoom - (outerY + frameInset)) / scale), 0, design.totalHeight)
+      x: (cursor.x - pan.x) / zoom,
+      y: (cursor.y - pan.y) / zoom
     };
-  }, [cursor, design.totalHeight, design.totalWidth, frameInset, outerX, outerY, pan.x, pan.y, scale, zoom]);
+  }, [cursor, pan.x, pan.y, zoom]);
+  const osnapCandidate = useMemo(
+    () =>
+      resolveOsnapCandidate(
+        worldCursor,
+        design,
+        scale,
+        outerX,
+        outerY,
+        outerW,
+        outerH,
+        frameInset,
+        transomOffsets,
+        osnapEnabled ? osnapModes : null,
+        zoom
+      ),
+    [design, frameInset, osnapEnabled, osnapModes, outerH, outerW, outerX, outerY, scale, transomOffsets, worldCursor, zoom]
+  );
   const rulerStepMm = useMemo(() => getRulerStepMm(scale, zoom), [scale, zoom]);
   const horizontalRulerTicks = useMemo(
     () =>
@@ -2754,6 +4690,41 @@ function PvcCanvas({
       ).toFixed(2)} m²`
     };
   }, [pan.x, pan.y, selectedBounds, selectedPanelData, svgWidth, zoom]);
+  const selectedTechnicalPanel = useMemo(() => {
+    if (!selectedPanelData) {
+      return null;
+    }
+
+    return buildPanelEngineering(design, selectedPanelData.panel.width, selectedPanelData.transom.height);
+  }, [design, selectedPanelData]);
+  const technicalDetailRows = useMemo(() => {
+    if (!selectedPanelData || !selectedTechnicalPanel) {
+      return [];
+    }
+
+    return [
+      {
+        id: "D1",
+        title: "Panel Kimligi",
+        value: `${selectedPanelData.panel.label} / ${formatOpeningLabel(selectedPanelData.panel.openingType)}`
+      },
+      {
+        id: "D2",
+        title: "Net Kanat",
+        value: `${Math.round(selectedTechnicalPanel.approxSashWidthMm)} x ${Math.round(selectedTechnicalPanel.approxSashHeightMm)} mm`
+      },
+      {
+        id: "D3",
+        title: "Net Cam",
+        value: `${Math.round(selectedTechnicalPanel.approxGlassWidthMm)} x ${Math.round(selectedTechnicalPanel.approxGlassHeightMm)} mm`
+      },
+      {
+        id: "D4",
+        title: "Sistem",
+        value: `${profileSeriesCatalog[design.materials.profileSeries].label} / ${glassCatalog[design.materials.glassType].label}`
+      }
+    ];
+  }, [design.materials.glassType, design.materials.profileSeries, selectedPanelData, selectedTechnicalPanel]);
   const selectedRowBounds = useMemo(() => {
     if (!selectedPanelData) {
       return null;
@@ -2766,6 +4737,105 @@ function PvcCanvas({
       height: selectedPanelData.transom.height * scale
     };
   }, [design.totalWidth, frameInset, outerX, scale, selectedPanelData, transomOffsets]);
+  const panelCenterDelta = useMemo(() => {
+    if (!blockSelectionPreview) {
+      return null;
+    }
+
+    const transom = design.transoms.find((item) => item.id === blockSelectionPreview.transomId);
+    if (!transom) {
+      return null;
+    }
+
+    const indexes = blockSelectionPreview.panels
+      .map((item) => transom.panels.findIndex((panel) => panel.id === item.panelId))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b);
+    if (!indexes.length || indexes[0] <= 0 || indexes[indexes.length - 1] >= transom.panels.length - 1) {
+      return null;
+    }
+
+    const leftNeighbor = transom.panels[indexes[0] - 1];
+    const rightNeighbor = transom.panels[indexes[indexes.length - 1] + 1];
+    if (!leftNeighbor || !rightNeighbor) {
+      return null;
+    }
+
+    return Math.round((rightNeighbor.width - leftNeighbor.width) / 2);
+  }, [blockSelectionPreview, design.transoms]);
+  const transomCenterDelta = useMemo(() => {
+    if (!selectedPanelData) {
+      return null;
+    }
+
+    const transomIndex = design.transoms.findIndex((item) => item.id === selectedPanelData.transom.id);
+    if (transomIndex <= 0 || transomIndex >= design.transoms.length - 1) {
+      return null;
+    }
+
+    const aboveTransom = design.transoms[transomIndex - 1];
+    const belowTransom = design.transoms[transomIndex + 1];
+    if (!aboveTransom || !belowTransom) {
+      return null;
+    }
+
+    return Math.round((belowTransom.height - aboveTransom.height) / 2);
+  }, [design.transoms, selectedPanelData]);
+  const placementTelemetry = useMemo(
+    () =>
+      projectPlacementTelemetry(interactivePlacement, osnapCandidate?.point ?? worldCursor, scale, snapMm, {
+        orthoMode,
+        polarMode,
+        polarAngle,
+        osnapLabel: osnapCandidate?.label ?? null
+      }),
+    [interactivePlacement, orthoMode, osnapCandidate, polarAngle, polarMode, scale, snapMm, worldCursor]
+  );
+  const projectedWorldCursor = placementTelemetry?.point ?? osnapCandidate?.point ?? worldCursor;
+  const cursorMeasure = useMemo(() => {
+    if (!projectedWorldCursor) {
+      return null;
+    }
+
+    return {
+      xMm: clamp(Math.round((projectedWorldCursor.x - (outerX + frameInset)) / scale), 0, design.totalWidth),
+      yMm: clamp(Math.round((projectedWorldCursor.y - (outerY + frameInset)) / scale), 0, design.totalHeight)
+    };
+  }, [design.totalHeight, design.totalWidth, frameInset, outerX, outerY, projectedWorldCursor, scale]);
+  const interactiveCanvasTarget = useMemo(
+    () =>
+      interactivePlacement && projectedWorldCursor
+        ? resolveInteractiveCanvasTarget(
+            interactivePlacement,
+            projectedWorldCursor,
+            design,
+            scale,
+            outerX,
+            outerY,
+            outerW,
+            outerH,
+            frameInset,
+            transomOffsets,
+            selectedBounds,
+            selectedRowBounds
+          )
+        : null,
+    [
+      design,
+      frameInset,
+      interactivePlacement,
+      outerH,
+      outerW,
+      outerX,
+      outerY,
+      scale,
+      selectedBounds,
+      selectedRowBounds,
+      projectedWorldCursor,
+      transomOffsets,
+      worldCursor
+    ]
+  );
   const showPanelCanvasActions =
     selectedBounds &&
     viewMode !== "technical" &&
@@ -2821,6 +4891,69 @@ function PvcCanvas({
       bottomLabel: `${nextTransom.height} mm`
     };
   }, [design, dragState, frameInset, outerW, outerX, pan.x, pan.y, scale, transomOffsets, zoom]);
+  const technicalReferences = useMemo(
+    () => buildTechnicalPanelReferences(design, scale, outerX + frameInset, transomOffsets),
+    [design, frameInset, outerX, scale, transomOffsets]
+  );
+  const technicalScheduleHeight = useMemo(
+    () => getTechnicalScheduleHeight(technicalReferences.length),
+    [technicalReferences.length]
+  );
+  const technicalBoardData = useMemo(() => {
+    const report = buildManufacturingReport(design);
+    const snapshot = buildDesignSnapshot(design);
+    const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
+    const glassSpec = glassCatalog[design.materials.glassType];
+    const hardwareSpec = hardwareCatalog[design.materials.hardwareQuality];
+    const frameColorLabel =
+      frameColorOptions.find((item) => item.value === design.materials.frameColor)?.label ?? design.materials.frameColor;
+
+    return {
+      customerName: design.customer.customerName || "Musteri tanimsiz",
+      projectCode: design.customer.projectCode || "PRJ-000",
+      address: design.customer.address || "Adres girilmedi",
+      notes: design.customer.notes || "Teknik not girilmedi",
+      frameColorLabel,
+      profileLabel: profileSpec.label,
+      glassLabel: glassSpec.label,
+      hardwareLabel: hardwareSpec.label,
+      hingeCount: hardwareSpec.hingeCount,
+      profileMeters: report.profileLengthMeters.toFixed(2),
+      glassAreaM2: report.glassAreaM2.toFixed(2),
+      openingCount: snapshot.openingCount,
+      panelCount: snapshot.panelCount
+    };
+  }, [design]);
+  const technicalManufacturingSummary = useMemo(() => {
+    const report = buildManufacturingReport(design);
+    const health = buildDesignHealth(design);
+    const snapshot = buildDesignSnapshot(design);
+    const grouped = [
+      { key: "outer-frame", label: "Kasa", items: report.cutList.filter((item) => item.group === "outer-frame") },
+      { key: "mullion", label: "Dikey", items: report.cutList.filter((item) => item.group === "mullion") },
+      { key: "transom", label: "Yatay", items: report.cutList.filter((item) => item.group === "transom") },
+      { key: "sash", label: "Kanat", items: report.cutList.filter((item) => item.group === "sash") },
+      { key: "glass", label: "Cam", items: report.cutList.filter((item) => item.group === "glass") },
+      { key: "hardware", label: "Aksesuar", items: report.cutList.filter((item) => item.group === "hardware") }
+    ]
+      .map((group) => ({
+        ...group,
+        quantity: group.items.reduce((sum, item) => sum + item.quantity, 0),
+        lengthMeters:
+          group.items.reduce((sum, item) => sum + (item.lengthMm ?? 0) * item.quantity, 0) / 1000,
+        areaM2: group.items.reduce((sum, item) => sum + (item.areaM2 ?? 0) * item.quantity, 0)
+      }))
+      .filter((group) => group.quantity > 0)
+      .slice(0, 5);
+
+    return {
+      revisionTag: `R${String(Math.min(99, snapshot.panelCount + snapshot.transomCount)).padStart(2, "0")}`,
+      issueStatus: health.errors > 0 ? "Kontrol Gerekli" : health.warnings > 0 ? "Revizyonlu" : "Uretime Hazir",
+      checker: design.customer.customerName || "Kontrol Bekliyor",
+      totalCuts: report.cutList.length,
+      grouped
+    };
+  }, [design]);
 
   const getWorldPoint = (clientX: number, clientY: number, host: HTMLDivElement) => {
     const rect = host.getBoundingClientRect();
@@ -2985,7 +5118,7 @@ function PvcCanvas({
         }
 
         if (event.button === 0 && (toolMode === "guide-vertical" || toolMode === "guide-horizontal")) {
-          const worldPoint = getWorldPoint(event.clientX, event.clientY, event.currentTarget);
+          const worldPoint = projectedWorldCursor ?? getWorldPoint(event.clientX, event.clientY, event.currentTarget);
           const mmValue =
             toolMode === "guide-vertical"
               ? clamp(Math.round((worldPoint.x - (outerX + frameInset)) / scale), 0, design.totalWidth)
@@ -2993,6 +5126,24 @@ function PvcCanvas({
           onAddGuide(toolMode === "guide-vertical" ? "vertical" : "horizontal", mmValue);
           onToolModeChange("select");
           setDragHint(null);
+          return;
+        }
+
+        if (event.button === 0 && interactivePlacement) {
+          const worldPoint = projectedWorldCursor ?? getWorldPoint(event.clientX, event.clientY, event.currentTarget);
+          if (interactivePlacement.type === "copy" || interactivePlacement.type === "move") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (interactivePlacement.phase === "base") {
+              onApplyPlacement({ kind: "base-point", point: worldPoint });
+              return;
+            }
+          }
+          if (interactiveCanvasTarget) {
+            event.preventDefault();
+            event.stopPropagation();
+            onApplyPlacement(interactiveCanvasTarget);
+          }
           return;
         }
 
@@ -3346,43 +5497,129 @@ function PvcCanvas({
             return (
               <g key={panel.id}>
                 {isTechnical ? (
-                  <rect
-                    x={panelX}
-                    y={panelY}
-                    width={widthPx}
-                    height={heightPx}
-                    rx="4"
-                    fill="url(#technicalGlassFill)"
-                    stroke={
-                      isSelected
-                        ? "#c18dfc"
-                        : isMultiSelected
-                          ? "#f6c84a"
-                          : "#69b95c"
-                    }
-                    strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
-                    opacity={visibleLayers.profiles || visibleLayers.glass || visibleLayers.notes ? 1 : 0.08}
-                    className="clickable-panel"
-                    onClick={(event) => {
-                      if (event.shiftKey && toolMode === "select") {
-                        const exists = multiSelectionKeys.has(panelKey);
-                        const nextSelection = exists
-                          ? multiSelection.filter((item) => item.transomId !== transom.id || item.panelId !== panel.id)
-                          : [...multiSelection, { transomId: transom.id, panelId: panel.id }];
-                        onMultiSelectionChange(nextSelection);
-                      } else {
-                        onMultiSelectionChange([{ transomId: transom.id, panelId: panel.id }]);
+                  <>
+                    <rect
+                      x={panelX}
+                      y={panelY}
+                      width={widthPx}
+                      height={heightPx}
+                      rx="4"
+                      fill="url(#technicalGlassFill)"
+                      stroke={
+                        isSelected
+                          ? "#c18dfc"
+                          : isMultiSelected
+                            ? "#f6c84a"
+                            : "#69b95c"
                       }
-                      onObjectSelect(
-                        {
-                          type: "panel",
-                          transomId: transom.id,
-                          panelId: panel.id
-                        },
-                        event.shiftKey && toolMode === "select" ? { preserveMultiSelection: true } : undefined
-                      );
-                    }}
-                  />
+                      strokeWidth={isSelected ? "4.5" : isMultiSelected ? "3" : "1.4"}
+                      opacity={visibleLayers.profiles || visibleLayers.glass || visibleLayers.notes ? 1 : 0.08}
+                    />
+                    {visibleLayers.profiles && (
+                      <>
+                        {panelLayout.frameDetailRects.map((detailRect, index) => (
+                          <rect
+                            key={`technical-frame-detail-${panel.id}-${index}`}
+                            x={detailRect.x}
+                            y={detailRect.y}
+                            width={detailRect.width}
+                            height={detailRect.height}
+                            rx="3"
+                            className="technical-profile-line"
+                          />
+                        ))}
+                        {panelLayout.sashRect && (
+                          <rect
+                            x={panelLayout.sashRect.x}
+                            y={panelLayout.sashRect.y}
+                            width={panelLayout.sashRect.width}
+                            height={panelLayout.sashRect.height}
+                            rx="3"
+                            className="technical-profile-line highlight"
+                          />
+                        )}
+                        {panelLayout.sashDetailRects.map((detailRect, index) => (
+                          <rect
+                            key={`technical-sash-detail-${panel.id}-${index}`}
+                            x={detailRect.x}
+                            y={detailRect.y}
+                            width={detailRect.width}
+                            height={detailRect.height}
+                            rx="3"
+                            className="technical-profile-line soft"
+                          />
+                        ))}
+                        {panelLayout.reinforcementLines.map((line, index) => (
+                          <line
+                            key={`technical-reinforcement-${panel.id}-${index}`}
+                            x1={line.x1}
+                            y1={line.y1}
+                            x2={line.x2}
+                            y2={line.y2}
+                            className="technical-profile-line soft"
+                          />
+                        ))}
+                        {panelLayout.thermalChamberLines.map((line, index) => (
+                          <line
+                            key={`technical-thermal-${panel.id}-${index}`}
+                            x1={line.x1}
+                            y1={line.y1}
+                            x2={line.x2}
+                            y2={line.y2}
+                            className="technical-profile-line chamber"
+                          />
+                        ))}
+                      </>
+                    )}
+                    {visibleLayers.glass && (
+                      <>
+                        <rect
+                          x={panelLayout.glassRect.x}
+                          y={panelLayout.glassRect.y}
+                          width={panelLayout.glassRect.width}
+                          height={panelLayout.glassRect.height}
+                          rx="2"
+                          className="technical-glass-contour"
+                        />
+                        <rect
+                          x={panelLayout.beadRect.x}
+                          y={panelLayout.beadRect.y}
+                          width={panelLayout.beadRect.width}
+                          height={panelLayout.beadRect.height}
+                          rx="2"
+                          className="technical-profile-line soft"
+                        />
+                      </>
+                    )}
+                    <rect
+                      x={panelX}
+                      y={panelY}
+                      width={widthPx}
+                      height={heightPx}
+                      rx="4"
+                      fill="transparent"
+                      className="clickable-panel"
+                      onClick={(event) => {
+                        if (event.shiftKey && toolMode === "select") {
+                          const exists = multiSelectionKeys.has(panelKey);
+                          const nextSelection = exists
+                            ? multiSelection.filter((item) => item.transomId !== transom.id || item.panelId !== panel.id)
+                            : [...multiSelection, { transomId: transom.id, panelId: panel.id }];
+                          onMultiSelectionChange(nextSelection);
+                        } else {
+                          onMultiSelectionChange([{ transomId: transom.id, panelId: panel.id }]);
+                        }
+                        onObjectSelect(
+                          {
+                            type: "panel",
+                            transomId: transom.id,
+                            panelId: panel.id
+                          },
+                          event.shiftKey && toolMode === "select" ? { preserveMultiSelection: true } : undefined
+                        );
+                      }}
+                    />
+                  </>
                 ) : (
                   <>
                     <rect
@@ -3397,19 +5634,67 @@ function PvcCanvas({
                       opacity={visibleLayers.profiles ? 1 : 0}
                       filter="url(#panelShadow)"
                     />
-                    {panelLayout.sashRect && (
+                    {panelLayout.frameDetailRects.map((detailRect, index) => (
                       <rect
-                        x={panelLayout.sashRect.x}
-                        y={panelLayout.sashRect.y}
-                        width={panelLayout.sashRect.width}
-                        height={panelLayout.sashRect.height}
+                        key={`frame-detail-${panel.id}-${index}`}
+                        x={detailRect.x}
+                        y={detailRect.y}
+                        width={detailRect.width}
+                        height={detailRect.height}
                         rx="3"
-                        fill={palette.sashFill}
-                        stroke={palette.sashStroke}
-                        strokeWidth="1.2"
+                        className={`profile-detail-rect ${isPresentation ? "presentation" : "studio"} frame`}
                         opacity={visibleLayers.profiles ? 1 : 0}
                       />
+                    ))}
+                    {panelLayout.sashRect && (
+                      <>
+                        <rect
+                          x={panelLayout.sashRect.x}
+                          y={panelLayout.sashRect.y}
+                          width={panelLayout.sashRect.width}
+                          height={panelLayout.sashRect.height}
+                          rx="3"
+                          fill={palette.sashFill}
+                          stroke={palette.sashStroke}
+                          strokeWidth="1.2"
+                          opacity={visibleLayers.profiles ? 1 : 0}
+                        />
+                        {panelLayout.sashDetailRects.map((detailRect, index) => (
+                          <rect
+                            key={`sash-detail-${panel.id}-${index}`}
+                            x={detailRect.x}
+                            y={detailRect.y}
+                            width={detailRect.width}
+                            height={detailRect.height}
+                            rx="3"
+                            className={`profile-detail-rect ${isPresentation ? "presentation" : "studio"} sash`}
+                            opacity={visibleLayers.profiles ? 1 : 0}
+                          />
+                        ))}
+                      </>
                     )}
+                    {panelLayout.reinforcementLines.map((line, index) => (
+                      <line
+                        key={`reinforcement-${panel.id}-${index}`}
+                        x1={line.x1}
+                        y1={line.y1}
+                        x2={line.x2}
+                        y2={line.y2}
+                        className={`profile-reinforcement ${isPresentation ? "presentation" : "studio"}`}
+                        opacity={visibleLayers.profiles ? 1 : 0}
+                      />
+                    ))}
+                    {panelLayout.thermalChamberLines.map((line, index) => (
+                      <line
+                        key={`thermal-${panel.id}-${index}`}
+                        x1={line.x1}
+                        y1={line.y1}
+                        x2={line.x2}
+                        y2={line.y2}
+                        className={`profile-chamber ${isPresentation ? "presentation" : "studio"}`}
+                        opacity={visibleLayers.profiles ? 1 : 0}
+                      />
+                    ))}
                     <rect
                       x={panelLayout.glassRect.x}
                       y={panelLayout.glassRect.y}
@@ -3421,6 +5706,38 @@ function PvcCanvas({
                       strokeWidth="1"
                       opacity={visibleLayers.glass ? 1 : 0}
                     />
+                    <rect
+                      x={panelLayout.beadRect.x}
+                      y={panelLayout.beadRect.y}
+                      width={panelLayout.beadRect.width}
+                      height={panelLayout.beadRect.height}
+                      rx="2"
+                      className={`profile-bead ${isPresentation ? "presentation" : "studio"}`}
+                      opacity={visibleLayers.profiles ? 1 : 0}
+                    />
+                    {panelLayout.gasketLines.map((line, index) => (
+                      <line
+                        key={`gasket-${panel.id}-${index}`}
+                        x1={line.x1}
+                        y1={line.y1}
+                        x2={line.x2}
+                        y2={line.y2}
+                        className={`profile-gasket ${isPresentation ? "presentation" : "studio"}`}
+                        opacity={visibleLayers.profiles ? 1 : 0}
+                      />
+                    ))}
+                    {panelLayout.drainageSlots.map((slot, index) => (
+                      <rect
+                        key={`drainage-${panel.id}-${index}`}
+                        x={slot.x}
+                        y={slot.y}
+                        width={slot.width}
+                        height={slot.height}
+                        rx="2"
+                        className={`profile-drainage ${isPresentation ? "presentation" : "studio"}`}
+                        opacity={visibleLayers.profiles ? 1 : 0}
+                      />
+                    ))}
                     <line
                       x1={panelLayout.glassRect.x + 4}
                       y1={panelLayout.glassRect.y + 6}
@@ -3857,6 +6174,30 @@ function PvcCanvas({
                           tone="mullion"
                         />
                       )}
+                    {!isTechnical &&
+                      visibleLayers.hud &&
+                      isSameCanvasObject(selectedObject, {
+                        type: "mullion",
+                        transomId: transom.id,
+                        panelId: panel.id
+                      }) && (
+                        <SelectionOverlayPalette
+                          x={panelX + widthPx}
+                          y={Math.max(outerY + 12, panelY - 84)}
+                          title="Kayit Araclari"
+                          tone="mullion"
+                          activeValue=""
+                          actions={[
+                            { value: "nudge-left", label: "-50" },
+                            { value: "nudge-right", label: "+50" },
+                            { value: "ratio-50", label: "50/50" },
+                            { value: "ratio-33", label: "33/67" },
+                            { value: "ratio-67", label: "67/33" }
+                          ]}
+                          compact
+                          onSelect={onApplySelectedMullionPreset}
+                        />
+                      )}
                   </g>
                 )}
               </g>
@@ -3959,6 +6300,29 @@ function PvcCanvas({
                   tone="transom"
                 />
               )}
+            {!isTechnical &&
+              visibleLayers.hud &&
+              isSameCanvasObject(selectedObject, {
+                type: "transom-bar",
+                transomId: aboveTransom?.id ?? ""
+              }) && (
+                <SelectionOverlayPalette
+                  x={outerX + outerW / 2}
+                  y={Math.max(outerY + 12, offsetY - 92)}
+                  title="Satir Araclari"
+                  tone="transom"
+                  activeValue=""
+                  actions={[
+                    { value: "nudge-up", label: "-50" },
+                    { value: "nudge-down", label: "+50" },
+                    { value: "ratio-50", label: "50/50" },
+                    { value: "ratio-33", label: "33/67" },
+                    { value: "ratio-67", label: "67/33" }
+                  ]}
+                  compact
+                  onSelect={onApplySelectedTransomPreset}
+                />
+              )}
                 </>
               );
             })()}
@@ -4013,6 +6377,13 @@ function PvcCanvas({
             preview={commandPreview}
             selectedBounds={selectedBounds}
             selectedRowBounds={selectedRowBounds}
+            blockSelectionPreview={blockSelectionPreview}
+            panelShiftRange={panelShiftRange}
+            transomShiftRange={transomShiftRange}
+            activePanelCount={activePanelPreviewCount}
+            activeRowCount={activeRowPreviewCount}
+            panelCenterDelta={panelCenterDelta}
+            transomCenterDelta={transomCenterDelta}
             commandTarget={commandTarget}
             selectedObject={selectedObject}
             rowPanels={selectedPanelData?.transom.panels ?? null}
@@ -4021,6 +6392,32 @@ function PvcCanvas({
             mullionSize={mullionSize}
             scale={scale}
             design={design}
+          />
+        )}
+        {interactivePlacement && (
+          <PlacementPreviewOverlay
+            placement={interactivePlacement}
+            target={interactiveCanvasTarget}
+            cursorPoint={projectedWorldCursor ?? worldCursor}
+            selectedBounds={selectedBounds}
+            selectedRowBounds={selectedRowBounds}
+            blockSelectionPreview={blockSelectionPreview}
+            placementTelemetry={placementTelemetry}
+            scale={scale}
+          />
+        )}
+        {placementTelemetry && (
+          <PlacementTelemetryOverlay
+            telemetry={placementTelemetry}
+            point={placementTelemetry.point}
+          />
+        )}
+        {osnapCandidate && (
+          <OsnapOverlay
+            candidate={osnapCandidate}
+            orthoMode={orthoMode}
+            polarMode={polarMode}
+            polarAngle={polarAngle}
           />
         )}
 
@@ -4061,6 +6458,12 @@ function PvcCanvas({
 
           return <MultiSelectionOutline key={`${item.transomId}:${item.panelId}`} bounds={bounds} />;
         })}
+        {blockSelectionPreview && (
+          <BlockSelectionEnvelope
+            bounds={blockSelectionPreview.bounds}
+            label={`${blockSelectionPreview.panels.length} panel blok`}
+          />
+        )}
         {marquee && (
           <rect
             x={marquee.x}
@@ -4136,6 +6539,17 @@ function PvcCanvas({
             />
           </g>
         )}
+        {isTechnical && visibleLayers.notes && (
+          <TechnicalPageFrame
+            x={24}
+            y={56}
+            width={svgWidth - 48}
+            height={svgHeight - 116}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && (
+          <TechnicalReferenceOverlay references={technicalReferences} />
+        )}
         {visibleLayers.hud && selectedHud && (
           <SelectedPanelHud
             x={selectedHud.x}
@@ -4147,10 +6561,71 @@ function PvcCanvas({
           />
         )}
         {isTechnical && visibleLayers.notes && (
+          <TechnicalSectionMarkers
+            frameRect={{ x: outerX, y: outerY, width: outerW, height: outerH }}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && (
           <TechnicalTitleBlock
             x={svgWidth - 276}
             y={svgHeight - 152}
             design={design}
+            revisionTag={technicalManufacturingSummary.revisionTag}
+            issueStatus={technicalManufacturingSummary.issueStatus}
+            checker={technicalManufacturingSummary.checker}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && (
+          <TechnicalReferenceSchedule
+            x={svgWidth - 276}
+            y={74}
+            references={technicalReferences}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && (
+          <TechnicalProjectLegend
+            x={svgWidth - 276}
+            y={Math.min(svgHeight - 404, 74 + technicalScheduleHeight + 16)}
+            data={technicalBoardData}
+            summaryRows={technicalManufacturingSummary.grouped}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && selectedBounds && selectedPanelData && selectedTechnicalPanel && (
+          <TechnicalDetailCallouts
+            bounds={selectedBounds}
+            panelLabel={selectedPanelData.panel.label}
+            openingLabel={formatOpeningLabel(selectedPanelData.panel.openingType)}
+            engineering={selectedTechnicalPanel}
+            profileLabel={profileSeriesCatalog[design.materials.profileSeries].label}
+            glassLabel={glassCatalog[design.materials.glassType].label}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && selectedTechnicalPanel && (
+          <TechnicalMiniSection
+            x={svgWidth - 276}
+            y={Math.min(svgHeight - 168, 74 + technicalScheduleHeight + 268)}
+            design={design}
+            engineering={selectedTechnicalPanel}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && technicalDetailRows.length > 0 && (
+          <TechnicalDetailSchedule
+            x={svgWidth - 276}
+            y={Math.min(svgHeight - 322, 74 + technicalScheduleHeight + 118)}
+            rows={technicalDetailRows}
+          />
+        )}
+        {isTechnical && visibleLayers.notes && selectedPanelData && selectedTechnicalPanel && technicalDetailRows.length > 0 && (
+          <TechnicalDetailSheet
+            x={52}
+            y={outerY + outerH + 24}
+            width={Math.min(svgWidth - 360, 680)}
+            height={156}
+            panelLabel={selectedPanelData.panel.label}
+            openingLabel={formatOpeningLabel(selectedPanelData.panel.openingType)}
+            engineering={selectedTechnicalPanel}
+            detailRows={technicalDetailRows}
+            summary={technicalManufacturingSummary}
           />
         )}
         </g>
@@ -4159,8 +6634,17 @@ function PvcCanvas({
         <span><strong>Imlec</strong> {cursorMeasure ? `${cursorMeasure.xMm}, ${cursorMeasure.yMm} mm` : "--"}</span>
         <span><strong>Secim</strong> {selectedObject ? getCanvasObjectLabel(selectedObject) : selectedPanelData ? `${selectedPanelData.panel.label} / ${selectedPanelData.panel.width} x ${selectedPanelData.transom.height}` : "Yok"}</span>
         <span><strong>Snap</strong> {snapMm} mm</span>
+        <span><strong>OSNAP</strong> {osnapEnabled ? `Acik / ${[
+          osnapModes.endpoint ? "END" : null,
+          osnapModes.midpoint ? "MID" : null,
+          osnapModes.center ? "CEN" : null,
+          osnapModes.intersection ? "INT" : null
+        ].filter(Boolean).join(" ")}` : "Kapali"}</span>
+        <span><strong>ORTHO</strong> {orthoMode ? "Acik" : "Kapali"}</span>
+        <span><strong>POLAR</strong> {polarMode ? `${polarAngle}°` : "Kapali"}</span>
         <span><strong>Zoom</strong> %{Math.round(zoom * 100)}</span>
         <span><strong>Komut</strong> {toolMode}</span>
+        <span><strong>Placement</strong> {placementTelemetry ? `DX ${placementTelemetry.dxMm} / DY ${placementTelemetry.dyMm} / ${placementTelemetry.distanceMm} mm / ${placementTelemetry.trackingMode.toUpperCase()}` : "Pasif"}</span>
         <span><strong>Gorunum</strong> {isTechnical ? "Teknik" : isPresentation ? "Sunum" : "Studyo"}</span>
       </div>
     </div>
@@ -4280,20 +6764,148 @@ function SelectedPanelHud({
   );
 }
 
+function PlacementTelemetryOverlay({
+  telemetry,
+  point
+}: {
+  telemetry: PlacementTelemetry;
+  point: { x: number; y: number };
+}) {
+  const width = 184;
+  const height = 56;
+  const originX = point.x + 18;
+  const originY = point.y - 64;
+
+  return (
+    <g transform={`translate(${originX} ${originY})`}>
+      <rect width={width} height={height} rx="14" className="placement-telemetry-shell" />
+      <text x="12" y="18" className="placement-telemetry-title">
+        DX {telemetry.dxMm} / DY {telemetry.dyMm}
+      </text>
+      <text x="12" y="34" className="placement-telemetry-row">
+        Dist {telemetry.distanceMm} mm / {telemetry.angleDeg} deg
+      </text>
+      <text x="12" y="48" className="placement-telemetry-row muted">
+        {telemetry.axisLock
+          ? `${telemetry.axisLock.toUpperCase()} kilit`
+          : telemetry.trackingMode === "vector"
+            ? `VECTOR ${telemetry.lockedVectorMm?.dxMm ?? 0},${telemetry.lockedVectorMm?.dyMm ?? 0}`
+          : telemetry.trackingMode === "ortho"
+            ? "ORTHO"
+            : telemetry.trackingMode === "polar"
+              ? "POLAR"
+              : "Serbest"}
+        {telemetry.lockedDistanceMm ? ` / ${telemetry.lockedDistanceMm} mm lock` : ""}
+        {telemetry.osnapLabel ? ` / ${telemetry.osnapLabel}` : ""}
+      </text>
+    </g>
+  );
+}
+
+function OsnapOverlay({
+  candidate,
+  orthoMode,
+  polarMode,
+  polarAngle
+}: {
+  candidate: OsnapCandidate;
+  orthoMode: boolean;
+  polarMode: boolean;
+  polarAngle: number;
+}) {
+  const x = candidate.point.x;
+  const y = candidate.point.y;
+  const modeLabel = orthoMode ? "ORTHO" : polarMode ? `POLAR ${polarAngle}` : "TRACK";
+
+  return (
+    <g className="osnap-overlay">
+      <circle cx={x} cy={y} r="10" className="osnap-ring" />
+      <path d={`M ${x - 12} ${y} L ${x + 12} ${y} M ${x} ${y - 12} L ${x} ${y + 12}`} className="osnap-cross" />
+      <rect x={x + 14} y={y - 28} width={116} height="24" rx="12" className="osnap-label-shell" />
+      <text x={x + 24} y={y - 12} className="osnap-label-text">
+        {candidate.label} / {candidate.detail} / {modeLabel}
+      </text>
+    </g>
+  );
+}
+
+function PlacementReferenceGuides({
+  basePoint,
+  telemetry
+}: {
+  basePoint: { x: number; y: number };
+  telemetry: PlacementTelemetry;
+}) {
+  const cornerPoint = {
+    x: telemetry.axisLock === "y" ? basePoint.x : telemetry.point.x,
+    y: telemetry.axisLock === "x" ? basePoint.y : telemetry.point.y
+  };
+
+  return (
+    <g>
+      <line
+        x1={basePoint.x}
+        y1={basePoint.y}
+        x2={telemetry.point.x}
+        y2={telemetry.point.y}
+        className={`command-preview-reference-line ${telemetry.trackingMode}`}
+      />
+      {telemetry.axisLock !== "y" && telemetry.dxMm !== 0 && (
+        <>
+          <line
+            x1={basePoint.x}
+            y1={basePoint.y}
+            x2={cornerPoint.x}
+            y2={basePoint.y}
+            className="command-preview-reference-line"
+          />
+          <PreviewBadge
+            x={(basePoint.x + cornerPoint.x) / 2}
+            y={basePoint.y - 20}
+            text={`X ${telemetry.dxMm > 0 ? "+" : ""}${telemetry.dxMm}`}
+          />
+        </>
+      )}
+      {telemetry.axisLock !== "x" && telemetry.dyMm !== 0 && (
+        <>
+          <line
+            x1={cornerPoint.x}
+            y1={basePoint.y}
+            x2={telemetry.point.x}
+            y2={telemetry.point.y}
+            className="command-preview-reference-line"
+          />
+          <PreviewBadge
+            x={telemetry.point.x + 28}
+            y={(basePoint.y + telemetry.point.y) / 2}
+            text={`Y ${telemetry.dyMm > 0 ? "+" : ""}${telemetry.dyMm}`}
+          />
+        </>
+      )}
+    </g>
+  );
+}
+
 function TechnicalTitleBlock({
   x,
   y,
-  design
+  design,
+  revisionTag,
+  issueStatus,
+  checker
 }: {
   x: number;
   y: number;
   design: PvcDesign;
+  revisionTag: string;
+  issueStatus: string;
+  checker: string;
 }) {
   const today = new Date().toLocaleDateString("tr-TR");
 
   return (
     <g transform={`translate(${x} ${y})`}>
-      <rect width="248" height="122" rx="12" className="technical-title-block" />
+      <rect width="248" height="148" rx="12" className="technical-title-block" />
       <text x="16" y="22" className="technical-title-head">
         PVC DESIGNER / TEKNIK PAFTA
       </text>
@@ -4312,6 +6924,183 @@ function TechnicalTitleBlock({
       <text x="16" y="106" className="technical-title-meta">
         Tarih: {today}
       </text>
+      <line x1="14" y1="116" x2="234" y2="116" className="technical-info-divider" />
+      <text x="16" y="132" className="technical-title-meta">
+        Rev: {revisionTag}
+      </text>
+      <text x="96" y="132" className="technical-title-meta">
+        Durum: {truncateText(issueStatus, 14)}
+      </text>
+      <text x="16" y="146" className="technical-title-meta">
+        Kontrol: {truncateText(checker, 20)}
+      </text>
+    </g>
+  );
+}
+
+function TechnicalSectionMarkers({
+  frameRect
+}: {
+  frameRect: { x: number; y: number; width: number; height: number };
+}) {
+  const markers = [
+    {
+      label: "A-A",
+      x: frameRect.x + frameRect.width / 2,
+      y: frameRect.y - 20,
+      line: {
+        x1: frameRect.x + frameRect.width / 2,
+        y1: frameRect.y - 6,
+        x2: frameRect.x + frameRect.width / 2,
+        y2: frameRect.y + 24
+      }
+    },
+    {
+      label: "A-A",
+      x: frameRect.x + frameRect.width / 2,
+      y: frameRect.y + frameRect.height + 20,
+      line: {
+        x1: frameRect.x + frameRect.width / 2,
+        y1: frameRect.y + frameRect.height - 24,
+        x2: frameRect.x + frameRect.width / 2,
+        y2: frameRect.y + frameRect.height + 6
+      }
+    },
+    {
+      label: "B-B",
+      x: frameRect.x - 22,
+      y: frameRect.y + frameRect.height / 2,
+      line: {
+        x1: frameRect.x - 6,
+        y1: frameRect.y + frameRect.height / 2,
+        x2: frameRect.x + 24,
+        y2: frameRect.y + frameRect.height / 2
+      }
+    },
+    {
+      label: "B-B",
+      x: frameRect.x + frameRect.width + 22,
+      y: frameRect.y + frameRect.height / 2,
+      line: {
+        x1: frameRect.x + frameRect.width - 24,
+        y1: frameRect.y + frameRect.height / 2,
+        x2: frameRect.x + frameRect.width + 6,
+        y2: frameRect.y + frameRect.height / 2
+      }
+    }
+  ];
+
+  return (
+    <g>
+      {markers.map((marker) => (
+        <g key={`${marker.label}-${marker.x}-${marker.y}`}>
+          <line
+            x1={marker.line.x1}
+            y1={marker.line.y1}
+            x2={marker.line.x2}
+            y2={marker.line.y2}
+            className="technical-section-line"
+          />
+          <circle cx={marker.x} cy={marker.y} r="11" className="technical-section-circle" />
+          <text x={marker.x} y={marker.y + 4} textAnchor="middle" className="technical-section-text">
+            {marker.label}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function TechnicalReferenceOverlay({
+  references
+}: {
+  references: Array<{
+    refId: string;
+    label: string;
+    opening: string;
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+    badgeX: number;
+    badgeY: number;
+  }>;
+}) {
+  return (
+    <g>
+      {references.map((reference) => (
+        <g key={reference.refId}>
+          <line
+            x1={reference.centerX}
+            y1={reference.centerY}
+            x2={reference.badgeX}
+            y2={reference.badgeY}
+            className="technical-reference-line"
+          />
+          <circle cx={reference.badgeX} cy={reference.badgeY} r="12" className="technical-reference-badge" />
+          <text
+            x={reference.badgeX}
+            y={reference.badgeY + 4}
+            textAnchor="middle"
+            className="technical-reference-text"
+          >
+            {reference.label}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function TechnicalReferenceSchedule({
+  x,
+  y,
+  references
+}: {
+  x: number;
+  y: number;
+  references: Array<{
+    refId: string;
+    label: string;
+    opening: string;
+    width: number;
+    height: number;
+  }>;
+}) {
+  const visibleRows = references.slice(0, 10);
+  const hiddenCount = Math.max(0, references.length - visibleRows.length);
+  const width = 260;
+  const rowHeight = 22;
+  const height = getTechnicalScheduleHeight(references.length);
+
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="16" className="technical-schedule-shell" />
+      <text x="16" y="20" className="technical-schedule-title">
+        Panel Referans Listesi
+      </text>
+      <text x="16" y="38" className="technical-schedule-head">
+        Ref / Tip / Olcu
+      </text>
+      {visibleRows.map((reference, index) => (
+        <g key={reference.refId} transform={`translate(0 ${46 + index * rowHeight})`}>
+          <line x1="12" y1="0" x2={width - 12} y2="0" className="technical-schedule-divider" />
+          <text x="16" y="15" className="technical-schedule-row">
+            {reference.label}
+          </text>
+          <text x="62" y="15" className="technical-schedule-row muted">
+            {reference.opening}
+          </text>
+          <text x={width - 16} y="15" textAnchor="end" className="technical-schedule-row">
+            {reference.width}x{reference.height}
+          </text>
+        </g>
+      ))}
+      {hiddenCount > 0 && (
+        <text x="16" y={height - 8} className="technical-schedule-row muted">
+          +{hiddenCount} ek panel
+        </text>
+      )}
     </g>
   );
 }
@@ -4373,6 +7162,86 @@ function MultiSelectionOutline({
   );
 }
 
+function BlockSelectionEnvelope({
+  bounds,
+  label
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+  label: string;
+}) {
+  return (
+    <g>
+      <rect
+        x={bounds.x - 8}
+        y={bounds.y - 8}
+        width={bounds.width + 16}
+        height={bounds.height + 16}
+        rx="10"
+        className="multi-selection-envelope"
+      />
+      <PreviewBadge
+        x={bounds.x + bounds.width / 2}
+        y={bounds.y - 22}
+        text={label}
+      />
+    </g>
+  );
+}
+
+function PreviewBlockGhost({
+  x,
+  y,
+  width,
+  height,
+  panels,
+  tone
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  panels: Array<{
+    panelId: string;
+    label: string;
+    widthMm: number;
+    openingType: OpeningType;
+  }>;
+  tone: "copy" | "move";
+}) {
+  const totalWidth = panels.reduce((sum, panel) => sum + panel.widthMm, 0) || 1;
+  let cursor = x;
+
+  return (
+    <g>
+      {panels.map((panel, index) => {
+        const segmentWidth = index === panels.length - 1 ? x + width - cursor : (panel.widthMm / totalWidth) * width;
+        const segmentX = cursor;
+        cursor += segmentWidth;
+
+        return (
+          <g key={`${panel.panelId}-${index}`}>
+            <rect
+              x={segmentX}
+              y={y}
+              width={segmentWidth}
+              height={height}
+              className={`command-preview-tile ${tone}`}
+            />
+            <text
+              x={segmentX + segmentWidth / 2}
+              y={y + Math.min(18, height / 2)}
+              textAnchor="middle"
+              className="command-preview-text"
+            >
+              {panel.label}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 function TechnicalInnerDimension({
   x1,
   y1,
@@ -4425,6 +7294,466 @@ function CanvasActionButton({
       <circle cx={x} cy={y} r="16" className="canvas-action-button" />
       <text x={x} y={y + 5} textAnchor="middle" className="canvas-action-text">
         {label}
+      </text>
+    </g>
+  );
+}
+
+function TechnicalProjectLegend({
+  x,
+  y,
+  data,
+  summaryRows
+}: {
+  x: number;
+  y: number;
+  data: {
+    customerName: string;
+    projectCode: string;
+    address: string;
+    notes: string;
+    frameColorLabel: string;
+    profileLabel: string;
+    glassLabel: string;
+    hardwareLabel: string;
+    hingeCount: number;
+    profileMeters: string;
+    glassAreaM2: string;
+    openingCount: number;
+    panelCount: number;
+  };
+  summaryRows: Array<{
+    key: string;
+    label: string;
+    quantity: number;
+    lengthMeters: number;
+    areaM2: number;
+  }>;
+}) {
+  const width = 260;
+  const rows = [
+    {
+      left: `Musteri: ${truncateText(data.customerName, 14)}`,
+      right: `Proje: ${truncateText(data.projectCode, 10)}`
+    },
+    {
+      left: `Seri: ${truncateText(data.profileLabel, 12)}`,
+      right: `Cam: ${truncateText(data.glassLabel, 12)}`
+    },
+    {
+      left: `Donanim: ${truncateText(data.hardwareLabel, 11)}`,
+      right: `Renk: ${truncateText(data.frameColorLabel, 9)}`
+    },
+    {
+      left: `Panel: ${data.panelCount}`,
+      right: `Kanat: ${data.openingCount}`
+    },
+    {
+      left: `Profil: ${data.profileMeters} m`,
+      right: `Cam: ${data.glassAreaM2} m2`
+    },
+    {
+      left: `Mentese: ${data.hingeCount}`,
+      right: "Olcek: 1/10"
+    }
+  ];
+  const legendRows = ["Sab = Sabit", "Sag = Sag acilim", "Sol = Sol acilim", "Vas = Vasistas", "Sur = Surme"];
+  const height = 302;
+
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="16" className="technical-info-shell" />
+      <text x="16" y="20" className="technical-info-title">
+        Teknik Bilgi Panosu
+      </text>
+      {rows.map((row, index) => (
+        <g key={`${row.left}-${row.right}`}>
+          <text x="16" y={42 + index * 15} className="technical-info-row">
+            {row.left}
+          </text>
+          <text x="138" y={42 + index * 15} className="technical-info-row muted">
+            {row.right}
+          </text>
+        </g>
+      ))}
+      <line x1="14" y1="138" x2={width - 14} y2="138" className="technical-info-divider" />
+      <text x="16" y="156" className="technical-info-head">
+        Legend
+      </text>
+      {legendRows.map((row, index) => (
+        <text key={row} x="16" y={172 + index * 12} className="technical-info-row muted">
+          {row}
+        </text>
+      ))}
+      <line x1="14" y1="232" x2={width - 14} y2="232" className="technical-info-divider" />
+      <text x="16" y="248" className="technical-info-head">
+        Uretim Ozeti
+      </text>
+      {summaryRows.slice(0, 4).map((row, index) => (
+        <g key={row.key}>
+          <text x="16" y={264 + index * 12} className="technical-info-row">
+            {row.label}: {row.quantity}
+          </text>
+          <text x={width - 16} y={264 + index * 12} textAnchor="end" className="technical-info-row muted">
+            {row.lengthMeters > 0 ? `${row.lengthMeters.toFixed(1)} m` : row.areaM2 > 0 ? `${row.areaM2.toFixed(2)} m2` : "adet"}
+          </text>
+        </g>
+      ))}
+      <text x="16" y="122" className="technical-info-row muted">
+        Adres: {truncateText(data.address, 32)}
+      </text>
+      <text x="16" y="136" className="technical-info-row muted">
+        Not: {truncateText(data.notes, 34)}
+      </text>
+    </g>
+  );
+}
+
+function buildTechnicalDetailCalloutData(
+  bounds: { x: number; y: number; width: number; height: number },
+  panelLabel: string,
+  openingLabel: string,
+  engineering: ReturnType<typeof buildPanelEngineering>,
+  profileLabel: string,
+  glassLabel: string
+) {
+  const cardWidth = 158;
+  return [
+    {
+      id: "D1",
+      key: "panel",
+      title: "PANEL",
+      value: `${truncateText(panelLabel, 12)} / ${truncateText(openingLabel, 10)}`,
+      anchor: { x: bounds.x + bounds.width / 2, y: bounds.y + 8 },
+      card: { x: bounds.x + bounds.width + 28, y: bounds.y - 34 },
+      cardWidth
+    },
+    {
+      id: "D2",
+      key: "sash",
+      title: "KANAT",
+      value: `${Math.round(engineering.approxSashWidthMm)} x ${Math.round(engineering.approxSashHeightMm)} mm`,
+      anchor: { x: bounds.x + 12, y: bounds.y + bounds.height / 2 },
+      card: { x: Math.max(22, bounds.x - cardWidth - 30), y: bounds.y + bounds.height / 2 - 16 },
+      cardWidth
+    },
+    {
+      id: "D3",
+      key: "glass",
+      title: "CAM",
+      value: `${Math.round(engineering.approxGlassWidthMm)} x ${Math.round(engineering.approxGlassHeightMm)} / ${truncateText(glassLabel, 12)}`,
+      anchor: { x: bounds.x + bounds.width - 12, y: bounds.y + bounds.height / 2 + 18 },
+      card: { x: bounds.x + bounds.width + 28, y: bounds.y + bounds.height / 2 + 2 },
+      cardWidth
+    },
+    {
+      id: "D4",
+      key: "series",
+      title: "SERI",
+      value: `${truncateText(profileLabel, 15)} / ${engineering.approxSashWeightKg.toFixed(1)} kg`,
+      anchor: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height - 8 },
+      card: { x: bounds.x + bounds.width / 2 - cardWidth / 2, y: bounds.y + bounds.height + 26 },
+      cardWidth
+    }
+  ];
+}
+
+function TechnicalDetailCallouts({
+  bounds,
+  panelLabel,
+  openingLabel,
+  engineering,
+  profileLabel,
+  glassLabel
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+  panelLabel: string;
+  openingLabel: string;
+  engineering: ReturnType<typeof buildPanelEngineering>;
+  profileLabel: string;
+  glassLabel: string;
+}) {
+  const callouts = buildTechnicalDetailCalloutData(bounds, panelLabel, openingLabel, engineering, profileLabel, glassLabel);
+
+  return (
+    <g>
+      {callouts.map((item) => (
+        <g key={item.key}>
+          <line
+            x1={item.anchor.x}
+            y1={item.anchor.y}
+            x2={item.card.x + item.cardWidth / 2}
+            y2={item.card.y + 14}
+            className="technical-detail-line"
+          />
+          <rect
+            x={item.card.x}
+            y={item.card.y}
+            width={item.cardWidth}
+            height="28"
+            rx="10"
+            className="technical-detail-card"
+          />
+          <text x={item.card.x + 10} y={item.card.y + 12} className="technical-detail-title">
+            {item.id} / {item.title}
+          </text>
+          <text x={item.card.x + 10} y={item.card.y + 22} className="technical-detail-value">
+            {item.value}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function TechnicalMiniSection({
+  x,
+  y,
+  design,
+  engineering
+}: {
+  x: number;
+  y: number;
+  design: PvcDesign;
+  engineering: ReturnType<typeof buildPanelEngineering>;
+}) {
+  const width = 260;
+  const height = 144;
+  const profileLabel = profileSeriesCatalog[design.materials.profileSeries].label;
+  const glassLabel = glassCatalog[design.materials.glassType].label;
+  const frameDepth = clamp(Math.round(design.outerFrameThickness * 0.58), 34, 68);
+  const sashDepth = clamp(Math.round(design.mullionThickness * 0.64), 26, 54);
+  const glassDepth = clamp(Math.round(sashDepth * 0.44), 10, 22);
+  const sectionX = 18;
+  const sectionY = 24;
+  const sectionWidth = 102;
+  const sectionHeight = 86;
+
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="16" className="technical-section-shell" />
+      <text x="16" y="20" className="technical-section-title">
+        Mini Kesit / Profil Detayi
+      </text>
+      <rect x={sectionX} y={sectionY} width={sectionWidth} height={sectionHeight} className="technical-section-frame" />
+      <rect
+        x={sectionX + frameDepth * 0.24}
+        y={sectionY + frameDepth * 0.24}
+        width={sectionWidth - frameDepth * 0.48}
+        height={sectionHeight - frameDepth * 0.48}
+        className="technical-section-sash"
+      />
+      <rect
+        x={sectionX + frameDepth * 0.24 + sashDepth * 0.34}
+        y={sectionY + frameDepth * 0.24 + sashDepth * 0.34}
+        width={sectionWidth - frameDepth * 0.48 - sashDepth * 0.68}
+        height={sectionHeight - frameDepth * 0.48 - sashDepth * 0.68}
+        className="technical-section-glass"
+      />
+      <line
+        x1={sectionX + frameDepth * 0.24 + sashDepth * 0.34 + glassDepth}
+        y1={sectionY + frameDepth * 0.24 + sashDepth * 0.34}
+        x2={sectionX + frameDepth * 0.24 + sashDepth * 0.34 + glassDepth}
+        y2={sectionY + sectionHeight - frameDepth * 0.24 - sashDepth * 0.34}
+        className="technical-section-divider"
+      />
+      <line x1="136" y1="32" x2="244" y2="32" className="technical-info-divider" />
+      <text x="136" y="48" className="technical-section-meta">
+        Seri: {truncateText(profileLabel, 18)}
+      </text>
+      <text x="136" y="64" className="technical-section-meta">
+        Cam: {truncateText(glassLabel, 18)}
+      </text>
+      <text x="136" y="80" className="technical-section-meta">
+        Kanat: {Math.round(engineering.approxSashWidthMm)} x {Math.round(engineering.approxSashHeightMm)}
+      </text>
+      <text x="136" y="96" className="technical-section-meta">
+        Net Cam: {Math.round(engineering.approxGlassWidthMm)} x {Math.round(engineering.approxGlassHeightMm)}
+      </text>
+      <text x="136" y="112" className="technical-section-meta">
+        Agirlik: {engineering.approxSashWeightKg.toFixed(1)} kg
+      </text>
+      <text x="136" y="128" className="technical-section-meta muted">
+        Kasa {design.outerFrameThickness} / Kayit {design.mullionThickness} / Cita {profileSeriesCatalog[design.materials.profileSeries].beadAllowanceMm}
+      </text>
+    </g>
+  );
+}
+
+function TechnicalDetailSchedule({
+  x,
+  y,
+  rows
+}: {
+  x: number;
+  y: number;
+  rows: Array<{ id: string; title: string; value: string }>;
+}) {
+  const width = 260;
+  const rowHeight = 22;
+  const height = 42 + rows.length * rowHeight;
+
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="14" className="technical-detail-schedule-shell" />
+      <text x="16" y="20" className="technical-detail-schedule-title">
+        Detay Listesi
+      </text>
+      {rows.map((row, index) => (
+        <g key={row.id} transform={`translate(0 ${32 + index * rowHeight})`}>
+          <line x1="12" y1="0" x2={width - 12} y2="0" className="technical-schedule-divider" />
+          <text x="16" y="14" className="technical-detail-schedule-id">
+            {row.id}
+          </text>
+          <text x="52" y="14" className="technical-detail-schedule-label">
+            {truncateText(row.title, 14)}
+          </text>
+          <text x={width - 16} y="14" textAnchor="end" className="technical-detail-schedule-value">
+            {truncateText(row.value, 24)}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function TechnicalPageFrame({
+  x,
+  y,
+  width,
+  height
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) {
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="22" className="technical-page-frame" />
+      <rect x="18" y="18" width={width - 36} height={height - 36} rx="18" className="technical-page-frame inner" />
+      <text x="24" y="26" className="technical-page-label">
+        SHEET / 01
+      </text>
+      <text x={width - 24} y={26} textAnchor="end" className="technical-page-label">
+        LOGICAL STYLE PVC CAD LAYOUT
+      </text>
+    </g>
+  );
+}
+
+function TechnicalDetailSheet({
+  x,
+  y,
+  width,
+  height,
+  panelLabel,
+  openingLabel,
+  engineering,
+  detailRows,
+  summary
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  panelLabel: string;
+  openingLabel: string;
+  engineering: ReturnType<typeof buildPanelEngineering>;
+  detailRows: Array<{ id: string; title: string; value: string }>;
+  summary: {
+    revisionTag: string;
+    issueStatus: string;
+    checker: string;
+    totalCuts: number;
+    grouped: Array<{
+      key: string;
+      label: string;
+      quantity: number;
+      lengthMeters: number;
+      areaM2: number;
+    }>;
+  };
+}) {
+  const sketchX = 22;
+  const sketchY = 28;
+  const sketchWidth = 176;
+  const sketchHeight = height - 48;
+  const frameInset = 16;
+  const sashInset = 34;
+  const glassInset = 52;
+
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={width} height={height} rx="18" className="technical-detail-sheet" />
+      <text x="20" y="22" className="technical-detail-sheet-title">
+        DETAY LEVHASI / SAYFA 02
+      </text>
+      <text x={width - 20} y="22" textAnchor="end" className="technical-detail-sheet-meta">
+        {truncateText(panelLabel, 14)} / {truncateText(openingLabel, 14)}
+      </text>
+      <text x={width - 20} y="38" textAnchor="end" className="technical-detail-sheet-note muted">
+        {summary.revisionTag} / {truncateText(summary.issueStatus, 18)}
+      </text>
+      <rect x={sketchX} y={sketchY} width={sketchWidth} height={sketchHeight} rx="12" className="technical-detail-sheet-sketch" />
+      <rect
+        x={sketchX + frameInset}
+        y={sketchY + frameInset}
+        width={sketchWidth - frameInset * 2}
+        height={sketchHeight - frameInset * 2}
+        className="technical-detail-sheet-sash"
+      />
+      <rect
+        x={sketchX + glassInset}
+        y={sketchY + glassInset}
+        width={sketchWidth - glassInset * 2}
+        height={sketchHeight - glassInset * 2}
+        className="technical-detail-sheet-glass"
+      />
+      <line
+        x1={sketchX + sketchWidth / 2}
+        y1={sketchY + 10}
+        x2={sketchX + sketchWidth / 2}
+        y2={sketchY + sketchHeight - 10}
+        className="technical-detail-sheet-axis"
+      />
+      <line
+        x1={sketchX + 10}
+        y1={sketchY + sketchHeight / 2}
+        x2={sketchX + sketchWidth - 10}
+        y2={sketchY + sketchHeight / 2}
+        className="technical-detail-sheet-axis"
+      />
+      <text x={sketchX + 12} y={sketchY + sketchHeight + 18} className="technical-detail-sheet-note">
+        Net Kanat: {Math.round(engineering.approxSashWidthMm)} x {Math.round(engineering.approxSashHeightMm)} mm
+      </text>
+      <text x={sketchX + 12} y={sketchY + sketchHeight + 34} className="technical-detail-sheet-note muted">
+        Net Cam: {Math.round(engineering.approxGlassWidthMm)} x {Math.round(engineering.approxGlassHeightMm)} mm
+      </text>
+
+      <line x1="220" y1="32" x2={width - 20} y2="32" className="technical-info-divider" />
+      {detailRows.slice(0, 4).map((row, index) => (
+        <g key={row.id} transform={`translate(220 ${46 + index * 18})`}>
+          <rect width={width - 240} height="16" rx="8" className="technical-detail-sheet-row" />
+          <text x="10" y="12" className="technical-detail-sheet-row-id">
+            {row.id}
+          </text>
+          <text x="38" y="12" className="technical-detail-sheet-row-text">
+            {truncateText(`${row.title}: ${row.value}`, 52)}
+          </text>
+        </g>
+      ))}
+      <line x1="220" y1={height - 62} x2={width - 20} y2={height - 62} className="technical-info-divider" />
+      <text x="220" y={height - 46} className="technical-detail-sheet-note">
+        Kesim: {summary.totalCuts} satir / Kontrol: {truncateText(summary.checker, 18)}
+      </text>
+      {summary.grouped.slice(0, 2).map((row, index) => (
+        <text key={row.key} x="220" y={height - 30 + index * 12} className="technical-detail-sheet-note muted">
+          {row.label}: {row.quantity} / {row.lengthMeters > 0 ? `${row.lengthMeters.toFixed(1)} m` : row.areaM2 > 0 ? `${row.areaM2.toFixed(2)} m2` : "adet"}
+        </text>
+      ))}
+      <text x="220" y={height - 18} className="technical-detail-sheet-note muted">
+        Referans: montaj, kesit ve cam yerlesimi kontrol ediniz.
       </text>
     </g>
   );
@@ -4559,7 +7888,7 @@ function SelectionOverlayPalette({
   x: number;
   y: number;
   title: string;
-  tone: "sash" | "glass" | "hardware";
+  tone: "sash" | "glass" | "hardware" | "mullion" | "transom";
   activeValue: string;
   actions: Array<{ value: string; label: string }>;
   compact?: boolean;
@@ -4614,6 +7943,13 @@ function CommandPreviewOverlay({
   preview,
   selectedBounds,
   selectedRowBounds,
+  blockSelectionPreview,
+  panelShiftRange,
+  transomShiftRange,
+  activePanelCount,
+  activeRowCount,
+  panelCenterDelta,
+  transomCenterDelta,
   commandTarget,
   selectedObject,
   rowPanels,
@@ -4626,6 +7962,13 @@ function CommandPreviewOverlay({
   preview: CommandPreview;
   selectedBounds: { x: number; y: number; width: number; height: number } | null;
   selectedRowBounds: { x: number; y: number; width: number; height: number } | null;
+  blockSelectionPreview: BlockSelectionPreview | null;
+  panelShiftRange: { min: number; max: number } | null;
+  transomShiftRange: { min: number; max: number } | null;
+  activePanelCount: number;
+  activeRowCount: number;
+  panelCenterDelta: number | null;
+  transomCenterDelta: number | null;
   commandTarget: CommandTarget | null;
   selectedObject: CanvasObjectSelection | null;
   rowPanels: PanelDefinition[] | null;
@@ -4635,7 +7978,222 @@ function CommandPreviewOverlay({
   scale: number;
   design: PvcDesign;
 }) {
-  if (preview.type === "array" && selectedBounds) {
+  if (preview.type === "mirror" && preview.axis === "horizontal") {
+    const innerX = frameRect.x + frameInset;
+    const innerY = frameRect.y + frameInset;
+    let rowCursor = innerY;
+    const mirroredTransoms = [...design.transoms].reverse();
+
+    return (
+      <g>
+        <rect
+          x={innerX}
+          y={innerY}
+          width={Math.max(24, frameRect.width - frameInset * 2)}
+          height={Math.max(24, frameRect.height - frameInset * 2)}
+          className="command-preview-shell"
+        />
+        {mirroredTransoms.map((transom, rowIndex) => {
+          const rowHeight = transom.height * scale;
+          let panelCursor = innerX;
+
+          return (
+            <g key={`mirror-stack-${transom.id}-${rowIndex}`}>
+              <rect
+                x={innerX}
+                y={rowCursor}
+                width={Math.max(24, frameRect.width - frameInset * 2)}
+                height={rowHeight}
+                className="command-preview-tile mirror"
+              />
+              {transom.panels.map((panel, panelIndex) => {
+                const panelWidth = panel.width * scale;
+                const panelX = panelCursor;
+                panelCursor += panelWidth;
+
+                return (
+                  <g key={`mirror-stack-panel-${panel.id}-${panelIndex}`}>
+                    <rect
+                      x={panelX}
+                      y={rowCursor}
+                      width={panelWidth}
+                      height={rowHeight}
+                      className="command-preview-tile"
+                    />
+                    <text
+                      x={panelX + panelWidth / 2}
+                      y={rowCursor + Math.min(18, rowHeight / 2)}
+                      textAnchor="middle"
+                      className="command-preview-text"
+                    >
+                      {panel.label}
+                    </text>
+                  </g>
+                );
+              })}
+              {(() => {
+                const badgeY = rowCursor;
+                rowCursor += rowHeight;
+                return (
+                  <PreviewBadge
+                    x={innerX + Math.max(24, frameRect.width - frameInset * 2) - 58}
+                    y={badgeY + 18}
+                    text={`Satir ${rowIndex + 1}`}
+                  />
+                );
+              })()}
+            </g>
+          );
+        })}
+        <PreviewBadge
+          x={innerX + Math.max(24, frameRect.width - frameInset * 2) / 2}
+          y={innerY - 18}
+          text="Mirror Yatay Preview"
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "mirror" && preview.axis === "pick") {
+    const verticalLine =
+      selectedRowBounds && {
+        x1: selectedRowBounds.x + selectedRowBounds.width / 2,
+        y1: selectedRowBounds.y - 18,
+        x2: selectedRowBounds.x + selectedRowBounds.width / 2,
+        y2: selectedRowBounds.y + selectedRowBounds.height + 18
+      };
+    const horizontalLine = {
+      x1: frameRect.x - 18,
+      y1: frameRect.y + frameRect.height / 2,
+      x2: frameRect.x + frameRect.width + 18,
+      y2: frameRect.y + frameRect.height / 2
+    };
+
+    return (
+      <g>
+        {verticalLine && (
+          <line
+            x1={verticalLine.x1}
+            y1={verticalLine.y1}
+            x2={verticalLine.x2}
+            y2={verticalLine.y2}
+            className="command-preview-target-line"
+          />
+        )}
+        <line
+          x1={horizontalLine.x1}
+          y1={horizontalLine.y1}
+          x2={horizontalLine.x2}
+          y2={horizontalLine.y2}
+          className="command-preview-target-line"
+        />
+        <PreviewBadge
+          x={frameRect.x + frameRect.width / 2}
+          y={frameRect.y - 18}
+          text="Mirror eksenini sec"
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "align") {
+    const bounds = preview.mode === "row" ? selectedRowBounds : blockSelectionPreview?.bounds ?? selectedBounds;
+    const deltaMm =
+      preview.mode === "row"
+        ? preview.position === "start"
+          ? transomShiftRange?.min ?? null
+          : transomShiftRange?.max ?? null
+        : preview.position === "start"
+          ? panelShiftRange?.min ?? null
+          : panelShiftRange?.max ?? null;
+
+    if (!bounds || deltaMm === null) {
+      return null;
+    }
+
+    const shifted =
+      preview.mode === "row"
+        ? { x: bounds.x, y: bounds.y + deltaMm * scale, width: bounds.width, height: bounds.height }
+        : { x: bounds.x + deltaMm * scale, y: bounds.y, width: bounds.width, height: bounds.height };
+
+    return (
+      <g>
+        <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} className="command-preview-shell target" />
+        <rect x={shifted.x} y={shifted.y} width={shifted.width} height={shifted.height} className="command-preview-tile align" />
+        <line
+          x1={bounds.x + bounds.width / 2}
+          y1={bounds.y + bounds.height / 2}
+          x2={shifted.x + shifted.width / 2}
+          y2={shifted.y + shifted.height / 2}
+          className="command-preview-target-line"
+        />
+        <PreviewBadge
+          x={shifted.x + shifted.width / 2}
+          y={shifted.y - 18}
+          text={`Align ${preview.mode === "row" ? preview.position === "start" ? "Top" : "Bottom" : preview.position === "start" ? "Left" : "Right"} ${deltaMm > 0 ? "+" : ""}${deltaMm}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "distribute") {
+    if (preview.mode === "panel") {
+      const bounds = blockSelectionPreview?.bounds ?? selectedBounds;
+      const count = Math.max(0, activePanelCount);
+      if (!bounds || count < 2) {
+        return null;
+      }
+      const segmentWidth = bounds.width / count;
+      return (
+        <g>
+          <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} className="command-preview-shell" />
+          {Array.from({ length: count }, (_, index) => {
+            const x = bounds.x + index * segmentWidth;
+            return (
+              <g key={`distribute-panel-${index}`}>
+                <rect x={x} y={bounds.y} width={segmentWidth} height={bounds.height} className="command-preview-tile distribute" />
+                <text x={x + segmentWidth / 2} y={bounds.y + Math.min(18, bounds.height / 2)} textAnchor="middle" className="command-preview-text">
+                  {index + 1}
+                </text>
+              </g>
+            );
+          })}
+          <PreviewBadge x={bounds.x + bounds.width / 2} y={bounds.y - 18} text={`${preview.label} Panels x${count}`} />
+        </g>
+      );
+    }
+
+    const count = Math.max(0, activeRowCount);
+    const innerBounds = {
+      x: frameRect.x + frameInset,
+      y: frameRect.y + frameInset,
+      width: frameRect.width - frameInset * 2,
+      height: frameRect.height - frameInset * 2
+    };
+    if (count < 2 || innerBounds.height <= 0) {
+      return null;
+    }
+    const segmentHeight = innerBounds.height / count;
+    return (
+      <g>
+        <rect x={innerBounds.x} y={innerBounds.y} width={innerBounds.width} height={innerBounds.height} className="command-preview-shell" />
+        {Array.from({ length: count }, (_, index) => {
+          const y = innerBounds.y + index * segmentHeight;
+          return (
+            <g key={`distribute-row-${index}`}>
+              <rect x={innerBounds.x} y={y} width={innerBounds.width} height={segmentHeight} className="command-preview-tile distribute" />
+              <text x={innerBounds.x + innerBounds.width / 2} y={y + Math.min(18, segmentHeight / 2)} textAnchor="middle" className="command-preview-text">
+                {index + 1}
+              </text>
+            </g>
+          );
+        })}
+        <PreviewBadge x={innerBounds.x + innerBounds.width / 2} y={innerBounds.y - 18} text={`${preview.label} Rows x${count}`} />
+      </g>
+    );
+  }
+
+  if (preview.type === "array" && preview.mode === "panel" && selectedBounds) {
     const segmentWidth = selectedBounds.width / preview.count;
     return (
       <g>
@@ -4671,7 +8229,288 @@ function CommandPreviewOverlay({
         <PreviewBadge
           x={selectedBounds.x + selectedBounds.width / 2}
           y={selectedBounds.y - 18}
-          text={`Array ${preview.count}`}
+          text={preview.stepMm ? `Array ${preview.count} / Step ${preview.stepMm}` : `Array ${preview.count}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "array" && preview.mode === "row" && selectedRowBounds) {
+    const segmentHeight = selectedRowBounds.height / preview.count;
+    return (
+      <g>
+        <rect
+          x={selectedRowBounds.x}
+          y={selectedRowBounds.y}
+          width={selectedRowBounds.width}
+          height={selectedRowBounds.height}
+          className="command-preview-shell"
+        />
+        {Array.from({ length: preview.count }, (_, index) => {
+          const y = selectedRowBounds.y + index * segmentHeight;
+          return (
+            <g key={`array-row-preview-${index}`}>
+              <rect
+                x={selectedRowBounds.x}
+                y={y}
+                width={selectedRowBounds.width}
+                height={segmentHeight}
+                className="command-preview-tile"
+              />
+              <text
+                x={selectedRowBounds.x + selectedRowBounds.width / 2}
+                y={y + Math.min(18, segmentHeight / 2)}
+                textAnchor="middle"
+                className="command-preview-text"
+              >
+                {index + 1}
+              </text>
+            </g>
+          );
+        })}
+        <PreviewBadge
+          x={selectedRowBounds.x + selectedRowBounds.width / 2}
+          y={selectedRowBounds.y - 18}
+          text={preview.stepMm ? `Array Row ${preview.count} / Step ${preview.stepMm}` : `Array Row ${preview.count}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "grid-array" && selectedBounds && selectedRowBounds) {
+    const segmentHeight = selectedRowBounds.height / preview.rows;
+    const segmentWidth = selectedBounds.width / preview.columns;
+    return (
+      <g>
+        <rect
+          x={selectedRowBounds.x}
+          y={selectedRowBounds.y}
+          width={selectedRowBounds.width}
+          height={selectedRowBounds.height}
+          className="command-preview-shell"
+        />
+        {Array.from({ length: preview.rows }, (_, rowIndex) => {
+          const y = selectedRowBounds.y + rowIndex * segmentHeight;
+          return (
+            <g key={`grid-row-preview-${rowIndex}`}>
+              <rect
+                x={selectedRowBounds.x}
+                y={y}
+                width={selectedRowBounds.width}
+                height={segmentHeight}
+                className="command-preview-tile grid-row"
+              />
+              {Array.from({ length: preview.columns }, (_, columnIndex) => {
+                const x = selectedBounds.x + columnIndex * segmentWidth;
+                return (
+                  <g key={`grid-cell-preview-${rowIndex}-${columnIndex}`}>
+                    <rect
+                      x={x}
+                      y={y}
+                      width={segmentWidth}
+                      height={segmentHeight}
+                      className="command-preview-tile grid-cell"
+                    />
+                    <text
+                      x={x + segmentWidth / 2}
+                      y={y + Math.min(18, segmentHeight / 2)}
+                      textAnchor="middle"
+                      className="command-preview-text"
+                    >
+                      {rowIndex + 1}.{columnIndex + 1}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })}
+        <PreviewBadge
+          x={selectedRowBounds.x + selectedRowBounds.width / 2}
+          y={selectedRowBounds.y - 18}
+          text={`Grid ${preview.columns}x${preview.rows}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "offset-pattern") {
+    const bounds = preview.mode === "row" ? selectedRowBounds : blockSelectionPreview?.bounds ?? selectedBounds;
+    if (!bounds) {
+      return null;
+    }
+
+    const stepPx = Math.abs(preview.delta) * scale;
+    const anchorPositive = preview.delta > 0;
+    const axisSpan = preview.mode === "row" ? bounds.height : bounds.width;
+    const cuts: number[] = [];
+
+    for (let index = 1; index <= preview.count; index += 1) {
+      const position = stepPx * index;
+      if (axisSpan - position < (preview.mode === "row" ? 150 : 100) * scale) {
+        break;
+      }
+      cuts.push(position);
+    }
+
+    if (!cuts.length) {
+      return null;
+    }
+
+    const positions = anchorPositive ? cuts : cuts.map((value) => axisSpan - value);
+
+    return (
+      <g>
+        <rect
+          x={bounds.x}
+          y={bounds.y}
+          width={bounds.width}
+          height={bounds.height}
+          className="command-preview-shell"
+        />
+        {positions.map((position, index) =>
+          preview.mode === "row" ? (
+            <line
+              key={`offset-row-pattern-${index}`}
+              x1={bounds.x - 10}
+              y1={bounds.y + position}
+              x2={bounds.x + bounds.width + 10}
+              y2={bounds.y + position}
+              className="command-preview-line"
+            />
+          ) : (
+            <line
+              key={`offset-panel-pattern-${index}`}
+              x1={bounds.x + position}
+              y1={bounds.y - 10}
+              x2={bounds.x + position}
+              y2={bounds.y + bounds.height + 10}
+              className="command-preview-line"
+            />
+          )
+        )}
+        <PreviewBadge
+          x={bounds.x + bounds.width / 2}
+          y={bounds.y - 18}
+          text={`Offset ${preview.mode === "row" ? "Row" : blockSelectionPreview ? "Block" : "Panel"} ${preview.delta > 0 ? "+" : ""}${preview.delta} / ${cuts.length}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "move-displace") {
+    const bounds =
+      preview.mode === "row"
+        ? selectedRowBounds
+        : blockSelectionPreview?.bounds ?? selectedBounds;
+    if (!bounds) {
+      return null;
+    }
+
+    const nextDeltaMm =
+      preview.mode === "row"
+        ? clamp(preview.delta, transomShiftRange?.min ?? preview.delta, transomShiftRange?.max ?? preview.delta)
+        : clamp(preview.delta, panelShiftRange?.min ?? preview.delta, panelShiftRange?.max ?? preview.delta);
+    const deltaPx = nextDeltaMm * scale;
+    const ghostBounds =
+      preview.mode === "row"
+        ? { ...bounds, y: bounds.y + deltaPx }
+        : { ...bounds, x: bounds.x + deltaPx };
+    const isClamped = nextDeltaMm !== preview.delta;
+
+    return (
+      <g>
+        <rect
+          x={bounds.x}
+          y={bounds.y}
+          width={bounds.width}
+          height={bounds.height}
+          className="command-preview-shell target"
+        />
+        {preview.mode === "panel" && blockSelectionPreview ? (
+          <PreviewBlockGhost
+            x={ghostBounds.x}
+            y={ghostBounds.y}
+            width={ghostBounds.width}
+            height={ghostBounds.height}
+            panels={blockSelectionPreview.panels}
+            tone="move"
+          />
+        ) : (
+          <rect
+            x={ghostBounds.x}
+            y={ghostBounds.y}
+            width={ghostBounds.width}
+            height={ghostBounds.height}
+            className="command-preview-tile move"
+          />
+        )}
+        <line
+          x1={bounds.x + bounds.width / 2}
+          y1={bounds.y + bounds.height / 2}
+          x2={ghostBounds.x + ghostBounds.width / 2}
+          y2={ghostBounds.y + ghostBounds.height / 2}
+          className="command-preview-target-line"
+        />
+        <PreviewBadge
+          x={ghostBounds.x + ghostBounds.width / 2}
+          y={ghostBounds.y - 18}
+          text={`${preview.mode === "row" ? "Move Row" : blockSelectionPreview ? `Move Blok ${blockSelectionPreview.panels.length}` : "Move Panel"} ${nextDeltaMm > 0 ? "+" : ""}${nextDeltaMm}${isClamped ? " limit" : ""}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "copy-series") {
+    const bounds = preview.mode === "row" ? selectedRowBounds : blockSelectionPreview?.bounds ?? selectedBounds;
+    if (!bounds) {
+      return null;
+    }
+
+    const totalSpan = preview.mode === "row" ? bounds.height : bounds.width;
+    const nextCount = Math.max(2, preview.count);
+    const segmentSpan = totalSpan / (nextCount + 1);
+    const startSpan = preview.mode === "row" ? bounds.y : bounds.x;
+
+    return (
+      <g>
+        <rect
+          x={bounds.x}
+          y={bounds.y}
+          width={bounds.width}
+          height={bounds.height}
+          className="command-preview-shell"
+        />
+        {Array.from({ length: nextCount }, (_, index) => {
+          const segmentStart = startSpan + index * segmentSpan;
+          return preview.mode === "row" ? (
+            <rect
+              key={`copy-series-row-${index}`}
+              x={bounds.x}
+              y={segmentStart}
+              width={bounds.width}
+              height={segmentSpan}
+              className="command-preview-tile copy"
+            />
+          ) : (
+            <rect
+              key={`copy-series-panel-${index}`}
+              x={segmentStart}
+              y={bounds.y}
+              width={segmentSpan}
+              height={bounds.height}
+              className="command-preview-tile copy"
+            />
+          );
+        })}
+        <PreviewBadge
+          x={bounds.x + bounds.width / 2}
+          y={bounds.y - 18}
+          text={
+            preview.stepMm
+              ? `Copy ${preview.mode === "row" ? "Row" : "Panel"} x${preview.count} / ${preview.stepMm}`
+              : `Copy ${preview.mode === "row" ? "Row" : "Panel"} x${preview.count}`
+          }
         />
       </g>
     );
@@ -4717,6 +8556,72 @@ function CommandPreviewOverlay({
           x={selectedRowBounds.x + selectedRowBounds.width / 2}
           y={selectedRowBounds.y - 18}
           text="Mirror Preview"
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "edge-adjust") {
+    const bounds = preview.mode === "row" ? selectedRowBounds : blockSelectionPreview?.bounds ?? selectedBounds;
+    if (!bounds) {
+      return null;
+    }
+
+    const deltaPx = preview.delta * scale;
+    const thickness =
+      preview.edge === "left" || preview.edge === "right"
+        ? Math.min(bounds.width * 0.42, Math.max(14, deltaPx))
+        : Math.min(bounds.height * 0.42, Math.max(14, deltaPx));
+    const extending = preview.operation === "extend";
+
+    const rect =
+      preview.edge === "left"
+        ? { x: extending ? bounds.x - thickness : bounds.x, y: bounds.y, width: thickness, height: bounds.height }
+        : preview.edge === "right"
+          ? { x: extending ? bounds.x + bounds.width : bounds.x + bounds.width - thickness, y: bounds.y, width: thickness, height: bounds.height }
+          : preview.edge === "top"
+            ? { x: bounds.x, y: extending ? bounds.y - thickness : bounds.y, width: bounds.width, height: thickness }
+            : { x: bounds.x, y: extending ? bounds.y + bounds.height : bounds.y + bounds.height - thickness, width: bounds.width, height: thickness };
+
+    return (
+      <g>
+        <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} className="command-preview-shell" />
+        <rect
+          x={rect.x}
+          y={rect.y}
+          width={rect.width}
+          height={rect.height}
+          className={`command-preview-tile ${extending ? "copy" : "target"}`}
+        />
+        <PreviewBadge
+          x={bounds.x + bounds.width / 2}
+          y={bounds.y - 18}
+          text={`${preview.operation === "trim" ? "Trim" : "Extend"} ${preview.edge} ${preview.delta}`}
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "center") {
+    const bounds = preview.mode === "row" ? selectedRowBounds : blockSelectionPreview?.bounds ?? selectedBounds;
+    const deltaMm = preview.mode === "row" ? transomCenterDelta : panelCenterDelta;
+    if (!bounds || deltaMm === null) {
+      return null;
+    }
+
+    const shifted =
+      preview.mode === "row"
+        ? { x: bounds.x, y: bounds.y + deltaMm * scale, width: bounds.width, height: bounds.height }
+        : { x: bounds.x + deltaMm * scale, y: bounds.y, width: bounds.width, height: bounds.height };
+
+    return (
+      <g>
+        <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} className="command-preview-shell" />
+        <rect x={shifted.x} y={shifted.y} width={shifted.width} height={shifted.height} className="command-preview-tile mirror" />
+        <PreviewBadge
+          x={shifted.x + shifted.width / 2}
+          y={shifted.y - 18}
+          text={`${preview.mode === "row" ? "Center Row" : "Center Block"} ${deltaMm > 0 ? "+" : ""}${deltaMm}`}
         />
       </g>
     );
@@ -4792,6 +8697,101 @@ function CommandPreviewOverlay({
         />
       </g>
     );
+  }
+
+  if (preview.type === "move") {
+    const bounds =
+      preview.mode === "row"
+        ? selectedRowBounds
+        : blockSelectionPreview?.bounds ?? selectedBounds;
+    if (!bounds) {
+      return null;
+    }
+
+    return (
+      <g>
+        <rect
+          x={bounds.x}
+          y={bounds.y}
+          width={bounds.width}
+          height={bounds.height}
+          className="command-preview-shell target"
+        />
+        <PreviewBadge
+          x={bounds.x + bounds.width / 2}
+          y={bounds.y - 18}
+          text={
+            preview.mode === "row"
+              ? "Move Satir"
+              : blockSelectionPreview
+                ? `Move Blok ${blockSelectionPreview.panels.length}`
+                : "Move Panel"
+          }
+        />
+      </g>
+    );
+  }
+
+  if (preview.type === "offset-chain" && commandTarget) {
+    if (commandTarget.type === "panel-width" && selectedBounds) {
+      return (
+        <g>
+          {Array.from({ length: preview.count }, (_, index) => {
+            const nextWidthPx = clamp(
+              selectedBounds.width + preview.delta * scale * (index + 1),
+              100 * scale,
+              selectedRowBounds?.width ?? design.totalWidth * scale
+            );
+            const x = selectedBounds.x + nextWidthPx;
+            return (
+              <line
+                key={`offset-chain-panel-${index}`}
+                x1={x}
+                y1={selectedBounds.y - 18}
+                x2={x}
+                y2={selectedBounds.y + selectedBounds.height + 18}
+                className="command-preview-line"
+              />
+            );
+          })}
+          <PreviewBadge
+            x={selectedBounds.x + selectedBounds.width / 2}
+            y={selectedBounds.y - 18}
+            text={`Offset ${preview.delta > 0 ? "+" : ""}${preview.delta} / ${preview.count}`}
+          />
+        </g>
+      );
+    }
+
+    if (commandTarget.type === "transom-height" && selectedRowBounds) {
+      return (
+        <g>
+          {Array.from({ length: preview.count }, (_, index) => {
+            const nextHeightPx = clamp(
+              selectedRowBounds.height + preview.delta * scale * (index + 1),
+              150 * scale,
+              design.totalHeight * scale
+            );
+            const y = selectedRowBounds.y + nextHeightPx;
+            return (
+              <line
+                key={`offset-chain-row-${index}`}
+                x1={selectedRowBounds.x - 18}
+                y1={y}
+                x2={selectedRowBounds.x + selectedRowBounds.width + 18}
+                y2={y}
+                className="command-preview-line"
+              />
+            );
+          })}
+          <PreviewBadge
+            x={selectedRowBounds.x + selectedRowBounds.width / 2}
+            y={selectedRowBounds.y - 18}
+            text={`Offset ${preview.delta > 0 ? "+" : ""}${preview.delta} / ${preview.count}`}
+          />
+        </g>
+      );
+    }
   }
 
   if (preview.type === "offset" && commandTarget) {
@@ -4900,6 +8900,299 @@ function CommandPreviewOverlay({
   return null;
 }
 
+function PlacementPreviewOverlay({
+  placement,
+  target,
+  cursorPoint,
+  selectedBounds,
+  selectedRowBounds,
+  blockSelectionPreview,
+  placementTelemetry,
+  scale
+}: {
+  placement: InteractivePlacement;
+  target: InteractiveCanvasTarget | null;
+  cursorPoint: { x: number; y: number } | null;
+  selectedBounds: { x: number; y: number; width: number; height: number } | null;
+  selectedRowBounds: { x: number; y: number; width: number; height: number } | null;
+  blockSelectionPreview: BlockSelectionPreview | null;
+  placementTelemetry: PlacementTelemetry | null;
+  scale: number;
+}) {
+  if (!placement) {
+    return null;
+  }
+
+  if ((placement.type === "copy" || placement.type === "move") && placement.phase === "base") {
+    const anchorSource =
+      placement.mode === "panel"
+        ? blockSelectionPreview?.bounds ?? selectedBounds
+        : selectedRowBounds;
+    if (!anchorSource) {
+      return null;
+    }
+
+    return (
+      <g>
+        <rect
+          x={anchorSource.x}
+          y={anchorSource.y}
+          width={anchorSource.width}
+          height={anchorSource.height}
+          className="command-preview-shell target"
+        />
+        <PreviewBadge
+          x={anchorSource.x + anchorSource.width / 2}
+          y={anchorSource.y - 18}
+          text={placement.type === "copy" ? "Kaynak noktayi sec" : "Tasinacak referansi sec"}
+        />
+        {cursorPoint && (
+          <circle cx={cursorPoint.x} cy={cursorPoint.y} r="5.5" className="command-preview-anchor" />
+        )}
+      </g>
+    );
+  }
+
+  if ((placement.type === "copy" || placement.type === "move") && placement.mode === "panel" && selectedBounds) {
+    const previewTarget = target?.kind === "panel" ? target : null;
+    const previewSide = previewTarget?.side ?? null;
+    const targetBounds = previewTarget?.bounds ?? selectedBounds;
+    const singlePreviewWidth = targetBounds.width / 2;
+    const repeatCount = placement.type === "copy" ? Math.max(1, placement.repeatCount ?? 1) : 1;
+    const groupSourceWidth = blockSelectionPreview?.panels.reduce((sum, panel) => sum + panel.widthMm, 0) ?? 0;
+    const groupPreviewWidth =
+      blockSelectionPreview && previewTarget
+        ? Math.min((targetBounds.width - 100 * scale) / repeatCount, (groupSourceWidth || 0) * scale)
+        : null;
+    const activeWidth = Math.max(24, groupPreviewWidth ?? singlePreviewWidth / repeatCount);
+    const activeX =
+      previewSide === "right"
+        ? targetBounds.x + targetBounds.width - activeWidth * repeatCount
+        : targetBounds.x;
+
+    return (
+      <g>
+        <rect
+          x={targetBounds.x}
+          y={targetBounds.y}
+          width={targetBounds.width}
+          height={targetBounds.height}
+          className="command-preview-shell target"
+        />
+        {previewSide && (
+          <>
+            <rect
+              x={previewSide === "right" ? targetBounds.x + targetBounds.width - Math.max(14, targetBounds.width * 0.08) : targetBounds.x}
+              y={targetBounds.y}
+              width={Math.max(14, targetBounds.width * 0.08)}
+              height={targetBounds.height}
+              className="command-preview-slot"
+            />
+            {Array.from({ length: repeatCount }, (_, index) => {
+              const instanceX =
+                previewSide === "right"
+                  ? activeX + activeWidth * index
+                  : activeX + activeWidth * index;
+              return blockSelectionPreview ? (
+                <PreviewBlockGhost
+                  key={`placement-block-${index}`}
+                  x={instanceX}
+                  y={targetBounds.y}
+                  width={activeWidth}
+                  height={targetBounds.height}
+                  panels={blockSelectionPreview.panels}
+                  tone={placement.type === "copy" ? "copy" : "move"}
+                />
+              ) : (
+                <rect
+                  key={`placement-panel-${index}`}
+                  x={instanceX}
+                  y={targetBounds.y}
+                  width={activeWidth}
+                  height={targetBounds.height}
+                  className={`command-preview-tile ${placement.type === "copy" ? "copy" : "move"}`}
+                />
+              );
+            })}
+            <PreviewBadge
+              x={targetBounds.x + targetBounds.width / 2}
+              y={targetBounds.y - 18}
+              text={`${placement.type === "copy" ? "Copy" : "Move"} ${blockSelectionPreview ? "Blok" : "Hedef"} ${repeatCount > 1 ? `x${repeatCount} ` : ""}${previewSide === "left" ? "Sol" : "Sag"}${placementTelemetry?.axisLock ? ` / ${placementTelemetry.axisLock.toUpperCase()} kilit` : ""}`}
+            />
+          </>
+        )}
+        {!previewSide && (
+          <PreviewBadge
+            x={(blockSelectionPreview?.bounds ?? selectedBounds).x + (blockSelectionPreview?.bounds ?? selectedBounds).width / 2}
+            y={(blockSelectionPreview?.bounds ?? selectedBounds).y - 18}
+            text={placement.type === "copy" ? "Hedef panel uzerine git" : "Ayni satirda hedef panel sec"}
+          />
+        )}
+        {cursorPoint && placement.basePoint && (
+          <>
+            {placementTelemetry && (
+              <PlacementReferenceGuides
+                basePoint={placement.basePoint}
+                telemetry={placementTelemetry}
+              />
+            )}
+            <line
+              x1={placement.basePoint.x}
+              y1={placement.basePoint.y}
+              x2={cursorPoint.x}
+              y2={cursorPoint.y}
+              className="command-preview-target-line"
+            />
+            <circle cx={cursorPoint.x} cy={cursorPoint.y} r="5.5" className="command-preview-anchor" />
+          </>
+        )}
+      </g>
+    );
+  }
+
+  if ((placement.type === "copy" || placement.type === "move") && placement.mode === "row" && selectedRowBounds) {
+    const previewTarget = target?.kind === "row" ? target : null;
+    const previewSide = previewTarget?.side ?? null;
+    const targetBounds = previewTarget?.bounds ?? selectedRowBounds;
+    const halfHeight = targetBounds.height / 2;
+    const activeY = previewSide === "bottom" ? targetBounds.y + halfHeight : targetBounds.y;
+    const repeatCount = placement.type === "copy" ? Math.max(1, placement.repeatCount ?? 1) : 1;
+    const activeHeight = repeatCount > 1 ? Math.max(32, halfHeight / repeatCount) : halfHeight;
+
+    return (
+      <g>
+        <rect
+          x={targetBounds.x}
+          y={targetBounds.y}
+          width={targetBounds.width}
+          height={targetBounds.height}
+          className="command-preview-shell target"
+        />
+        {previewSide && (
+          <>
+            <rect
+              x={targetBounds.x}
+              y={previewSide === "bottom" ? targetBounds.y + targetBounds.height - Math.max(14, targetBounds.height * 0.18) : targetBounds.y}
+              width={targetBounds.width}
+              height={Math.max(14, targetBounds.height * 0.18)}
+              className="command-preview-slot"
+            />
+            {Array.from({ length: repeatCount }, (_, index) => (
+              <rect
+                key={`placement-row-${index}`}
+                x={targetBounds.x}
+                y={activeY + activeHeight * index}
+                width={targetBounds.width}
+                height={activeHeight}
+                className={`command-preview-tile ${placement.type === "copy" ? "copy" : "move"}`}
+              />
+            ))}
+            <PreviewBadge
+              x={targetBounds.x + targetBounds.width / 2}
+              y={targetBounds.y - 18}
+              text={`${placement.type === "copy" ? "Copy" : "Move"} ${repeatCount > 1 ? `x${repeatCount} ` : ""}${previewSide === "top" ? "Ust" : "Alt"}${placementTelemetry?.axisLock ? ` / ${placementTelemetry.axisLock.toUpperCase()} kilit` : ""}`}
+            />
+          </>
+        )}
+        {!previewSide && (
+          <PreviewBadge
+            x={selectedRowBounds.x + selectedRowBounds.width / 2}
+            y={selectedRowBounds.y - 18}
+            text={placement.type === "copy" ? "Hedef satir uzerine git" : "Hedef satiri sec"}
+          />
+        )}
+        {cursorPoint && placement.basePoint && (
+          <>
+            {placementTelemetry && (
+              <PlacementReferenceGuides
+                basePoint={placement.basePoint}
+                telemetry={placementTelemetry}
+              />
+            )}
+            <line
+              x1={placement.basePoint.x}
+              y1={placement.basePoint.y}
+              x2={cursorPoint.x}
+              y2={cursorPoint.y}
+              className="command-preview-target-line"
+            />
+            <circle cx={cursorPoint.x} cy={cursorPoint.y} r="5.5" className="command-preview-anchor" />
+          </>
+        )}
+      </g>
+    );
+  }
+
+  if (placement.type === "mirror" && target?.kind === "mirror-axis") {
+    return (
+      <g>
+        <line
+          x1={target.line.x1}
+          y1={target.line.y1}
+          x2={target.line.x2}
+          y2={target.line.y2}
+          className="command-preview-target-line"
+        />
+        <PreviewBadge
+          x={(target.line.x1 + target.line.x2) / 2}
+          y={(target.line.y1 + target.line.y2) / 2 - 18}
+          text={`Mirror ${target.axis === "vertical" ? "Dikey" : "Yatay"} Eksen`}
+        />
+      </g>
+    );
+  }
+
+  if (placement.type === "offset" && target?.kind === "offset-target") {
+    const isVertical = Math.abs(target.line.x1 - target.line.x2) < 0.01;
+    const lineCount = Math.max(1, placement.count ?? 1);
+
+    return (
+      <g>
+        <line
+          x1={target.line.x1}
+          y1={target.line.y1}
+          x2={target.line.x2}
+          y2={target.line.y2}
+          className="command-preview-target-line"
+        />
+        {Array.from({ length: lineCount }, (_, index) => {
+          const deltaPx = placement.delta * scale * (index + 1);
+          const ghostLine = isVertical
+            ? {
+                x1: target.line.x1 + deltaPx,
+                y1: target.line.y1,
+                x2: target.line.x2 + deltaPx,
+                y2: target.line.y2
+              }
+            : {
+                x1: target.line.x1,
+                y1: target.line.y1 + deltaPx,
+                x2: target.line.x2,
+                y2: target.line.y2 + deltaPx
+              };
+          return (
+            <line
+              key={`offset-preview-${index}`}
+              x1={ghostLine.x1}
+              y1={ghostLine.y1}
+              x2={ghostLine.x2}
+              y2={ghostLine.y2}
+              className="command-preview-line"
+            />
+          );
+        })}
+        <PreviewBadge
+          x={(target.line.x1 + target.line.x2) / 2}
+          y={(target.line.y1 + target.line.y2) / 2 - 18}
+          text={`Offset Hedef ${placement.delta > 0 ? "+" : ""}${placement.delta}${lineCount > 1 ? ` x${lineCount}` : ""}`}
+        />
+      </g>
+    );
+  }
+
+  return null;
+}
+
 function PreviewBadge({
   x,
   y,
@@ -4919,6 +9212,14 @@ function PreviewBadge({
       </text>
     </g>
   );
+}
+
+function truncateText(value: string, maxLength: number) {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed || "--";
+  }
+  return `${trimmed.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function HardwareOverlay({
@@ -5057,6 +9358,627 @@ function getSelectedBounds(
   const height = transom.height * scale;
 
   return { x, y, width, height };
+}
+
+function resolveInteractiveCanvasTarget(
+  placement: InteractivePlacement,
+  worldPoint: { x: number; y: number },
+  design: PvcDesign,
+  scale: number,
+  outerX: number,
+  outerY: number,
+  outerW: number,
+  outerH: number,
+  frameInset: number,
+  transomOffsets: number[],
+  selectedBounds: { x: number; y: number; width: number; height: number } | null,
+  selectedRowBounds: { x: number; y: number; width: number; height: number } | null
+): InteractiveCanvasTarget | null {
+  if (!placement) {
+    return null;
+  }
+
+  if (placement.type === "copy" || placement.type === "move") {
+    if (placement.phase === "base") {
+      return null;
+    }
+
+    if (placement.mode === "panel") {
+      const preferredSide =
+        placement.basePoint && Math.abs(worldPoint.x - placement.basePoint.x) > 0.01
+          ? worldPoint.x >= placement.basePoint.x
+            ? "right"
+            : "left"
+          : null;
+      const panelHit = findPanelPlacementTargetAtPoint(
+        design,
+        worldPoint,
+        scale,
+        outerX + frameInset,
+        transomOffsets,
+        preferredSide
+      );
+      if (!panelHit) {
+        return null;
+      }
+
+      return {
+        kind: "panel",
+        transomId: panelHit.transomId,
+        panelId: panelHit.panelId,
+        side: panelHit.side,
+        bounds: panelHit.bounds
+      };
+    }
+
+    const preferredSide =
+      placement.basePoint && Math.abs(worldPoint.y - placement.basePoint.y) > 0.01
+        ? worldPoint.y >= placement.basePoint.y
+          ? "bottom"
+          : "top"
+        : null;
+    const rowHit = findRowPlacementTargetAtPoint(
+      design,
+      worldPoint,
+      scale,
+      outerX + frameInset,
+      transomOffsets,
+      preferredSide
+    );
+    if (!rowHit) {
+      return null;
+    }
+
+    return {
+      kind: "row",
+      transomId: rowHit.transomId,
+      side: rowHit.side,
+      bounds: rowHit.bounds
+    };
+  }
+
+  if (placement.type === "mirror") {
+    const verticalLine =
+      selectedRowBounds && {
+        x1: selectedRowBounds.x + selectedRowBounds.width / 2,
+        y1: selectedRowBounds.y - 18,
+        x2: selectedRowBounds.x + selectedRowBounds.width / 2,
+        y2: selectedRowBounds.y + selectedRowBounds.height + 18
+      };
+    const horizontalLine = {
+      x1: outerX - 18,
+      y1: outerY + outerH / 2,
+      x2: outerX + outerW + 18,
+      y2: outerY + outerH / 2
+    };
+
+    const candidates = [
+      verticalLine && {
+        axis: "vertical" as const,
+        line: verticalLine,
+        distance: Math.abs(worldPoint.x - verticalLine.x1)
+      },
+      {
+        axis: "horizontal" as const,
+        line: horizontalLine,
+        distance: Math.abs(worldPoint.y - horizontalLine.y1)
+      }
+    ].filter(Boolean) as Array<{
+      axis: "vertical" | "horizontal";
+      line: { x1: number; y1: number; x2: number; y2: number };
+      distance: number;
+    }>;
+
+    const target = candidates.sort((a, b) => a.distance - b.distance)[0];
+    return target
+      ? {
+          kind: "mirror-axis",
+          axis: target.axis,
+          line: target.line
+        }
+      : null;
+  }
+
+  if (placement.type === "offset") {
+    const reference = findOffsetReferenceAtPoint(
+      design,
+      worldPoint,
+      scale,
+      outerX,
+      outerY,
+      outerW,
+      outerH,
+      frameInset,
+      transomOffsets
+    );
+
+    if (!reference) {
+      return null;
+    }
+
+    return {
+      kind: "offset-target",
+      target: reference.target,
+      line: reference.line,
+      guideMeta: reference.guideMeta
+    };
+  }
+
+  return null;
+}
+
+function findPanelPlacementTargetAtPoint(
+  design: PvcDesign,
+  worldPoint: { x: number; y: number },
+  scale: number,
+  startX: number,
+  transomOffsets: number[],
+  preferredSide: "left" | "right" | null
+) {
+  const slotWidth = 26;
+  const candidates: Array<{
+    transomId: string;
+    panelId: string;
+    side: "left" | "right";
+    bounds: { x: number; y: number; width: number; height: number };
+    distance: number;
+  }> = [];
+
+  for (let transomIndex = 0; transomIndex < design.transoms.length; transomIndex += 1) {
+    const transom = design.transoms[transomIndex];
+    let currentX = startX;
+    const y = transomOffsets[transomIndex];
+    const height = transom.height * scale;
+
+    for (const panel of transom.panels) {
+      const width = panel.width * scale;
+      const bounds = { x: currentX, y, width, height };
+      const leftSlot = { x: bounds.x - slotWidth, y: bounds.y - 6, width: slotWidth, height: bounds.height + 12 };
+      const rightSlot = { x: bounds.x + bounds.width, y: bounds.y - 6, width: slotWidth, height: bounds.height + 12 };
+
+      if (pointInRect(worldPoint, bounds)) {
+        candidates.push({
+          transomId: transom.id,
+          panelId: panel.id,
+          side: preferredSide ?? (worldPoint.x <= bounds.x + bounds.width / 2 ? "left" : "right"),
+          bounds,
+          distance: 0
+        });
+      } else {
+        if (pointInRect(worldPoint, leftSlot)) {
+          candidates.push({
+            transomId: transom.id,
+            panelId: panel.id,
+            side: "left",
+            bounds,
+            distance: Math.abs(worldPoint.x - (leftSlot.x + leftSlot.width / 2))
+          });
+        }
+        if (pointInRect(worldPoint, rightSlot)) {
+          candidates.push({
+            transomId: transom.id,
+            panelId: panel.id,
+            side: "right",
+            bounds,
+            distance: Math.abs(worldPoint.x - (rightSlot.x + rightSlot.width / 2))
+          });
+        }
+      }
+
+      currentX += width;
+    }
+  }
+
+  return candidates.sort((a, b) => a.distance - b.distance)[0] ?? null;
+}
+
+function findRowPlacementTargetAtPoint(
+  design: PvcDesign,
+  worldPoint: { x: number; y: number },
+  scale: number,
+  startX: number,
+  transomOffsets: number[],
+  preferredSide: "top" | "bottom" | null
+) {
+  const slotHeight = 26;
+  const candidates: Array<{
+    transomId: string;
+    side: "top" | "bottom";
+    bounds: { x: number; y: number; width: number; height: number };
+    distance: number;
+  }> = [];
+
+  for (let transomIndex = 0; transomIndex < design.transoms.length; transomIndex += 1) {
+    const transom = design.transoms[transomIndex];
+    const bounds = {
+      x: startX - 6,
+      y: transomOffsets[transomIndex],
+      width: design.totalWidth * scale + 12,
+      height: transom.height * scale
+    };
+    const topSlot = { x: bounds.x, y: bounds.y - slotHeight, width: bounds.width, height: slotHeight };
+    const bottomSlot = { x: bounds.x, y: bounds.y + bounds.height, width: bounds.width, height: slotHeight };
+
+    if (pointInRect(worldPoint, bounds)) {
+      candidates.push({
+        transomId: transom.id,
+        side: preferredSide ?? (worldPoint.y <= bounds.y + bounds.height / 2 ? "top" : "bottom"),
+        bounds,
+        distance: 0
+      });
+    } else {
+      if (pointInRect(worldPoint, topSlot)) {
+        candidates.push({
+          transomId: transom.id,
+          side: "top",
+          bounds,
+          distance: Math.abs(worldPoint.y - (topSlot.y + topSlot.height / 2))
+        });
+      }
+      if (pointInRect(worldPoint, bottomSlot)) {
+        candidates.push({
+          transomId: transom.id,
+          side: "bottom",
+          bounds,
+          distance: Math.abs(worldPoint.y - (bottomSlot.y + bottomSlot.height / 2))
+        });
+      }
+    }
+  }
+
+  return candidates.sort((a, b) => a.distance - b.distance)[0] ?? null;
+}
+
+function findPanelAtPoint(
+  design: PvcDesign,
+  worldPoint: { x: number; y: number },
+  scale: number,
+  startX: number,
+  transomOffsets: number[]
+) {
+  for (let transomIndex = 0; transomIndex < design.transoms.length; transomIndex += 1) {
+    const transom = design.transoms[transomIndex];
+    let currentX = startX;
+    const y = transomOffsets[transomIndex];
+    const height = transom.height * scale;
+
+    for (const panel of transom.panels) {
+      const width = panel.width * scale;
+      const bounds = { x: currentX, y, width, height };
+      if (pointInRect(worldPoint, bounds)) {
+        return {
+          transomId: transom.id,
+          panelId: panel.id,
+          bounds
+        };
+      }
+      currentX += width;
+    }
+  }
+
+  return null;
+}
+
+function findTransomAtPoint(
+  design: PvcDesign,
+  worldPoint: { x: number; y: number },
+  scale: number,
+  startX: number,
+  transomOffsets: number[]
+) {
+  for (let transomIndex = 0; transomIndex < design.transoms.length; transomIndex += 1) {
+    const transom = design.transoms[transomIndex];
+    const bounds = {
+      x: startX,
+      y: transomOffsets[transomIndex],
+      width: design.totalWidth * scale,
+      height: transom.height * scale
+    };
+
+    if (pointInRect(worldPoint, bounds)) {
+      return {
+        transomId: transom.id,
+        bounds
+      };
+    }
+  }
+
+  return null;
+}
+
+function findOffsetReferenceAtPoint(
+  design: PvcDesign,
+  worldPoint: { x: number; y: number },
+  scale: number,
+  outerX: number,
+  outerY: number,
+  outerW: number,
+  outerH: number,
+  frameInset: number,
+  transomOffsets: number[]
+) {
+  const threshold = 16;
+  const candidates: Array<{
+    target: CommandTarget;
+    line: { x1: number; y1: number; x2: number; y2: number };
+    distance: number;
+    guideMeta?: { orientation: GuideOrientation; positionMm: number };
+  }> = [];
+
+  design.guides.forEach((guide) => {
+    if (guide.orientation === "vertical") {
+      const x = outerX + frameInset + guide.positionMm * scale;
+      candidates.push({
+        target: {
+          type: "guide-position",
+          guideId: guide.id,
+          orientation: guide.orientation,
+          label: `Dikey Guide - ${guide.positionMm} mm`
+        },
+        line: { x1: x, y1: outerY - 44, x2: x, y2: outerY + outerH + 44 },
+        distance: Math.abs(worldPoint.x - x),
+        guideMeta: { orientation: "vertical", positionMm: guide.positionMm }
+      });
+    } else {
+      const y = outerY + frameInset + guide.positionMm * scale;
+      candidates.push({
+        target: {
+          type: "guide-position",
+          guideId: guide.id,
+          orientation: guide.orientation,
+          label: `Yatay Guide - ${guide.positionMm} mm`
+        },
+        line: { x1: outerX - 44, y1: y, x2: outerX + outerW + 44, y2: y },
+        distance: Math.abs(worldPoint.y - y),
+        guideMeta: { orientation: "horizontal", positionMm: guide.positionMm }
+      });
+    }
+  });
+
+  design.transoms.forEach((transom, transomIndex) => {
+    let currentX = outerX + frameInset;
+    const top = transomOffsets[transomIndex];
+    const height = transom.height * scale;
+
+    transom.panels.slice(0, -1).forEach((panel) => {
+      currentX += panel.width * scale;
+      candidates.push({
+        target: {
+          type: "panel-width",
+          transomId: transom.id,
+          panelId: panel.id,
+          label: `Dikey Kayit - ${panel.width} mm`
+        },
+        line: { x1: currentX, y1: top, x2: currentX, y2: top + height },
+        distance: Math.abs(worldPoint.x - currentX),
+        guideMeta: {
+          orientation: "vertical",
+          positionMm: Math.round((currentX - (outerX + frameInset)) / scale)
+        }
+      });
+    });
+  });
+
+  transomOffsets.slice(1).forEach((offsetY, dividerIndex) => {
+    const transom = design.transoms[dividerIndex];
+    if (!transom) {
+      return;
+    }
+    candidates.push({
+      target: {
+        type: "transom-height",
+        transomId: transom.id,
+        label: `Yatay Kayit - ${transom.height} mm`
+      },
+      line: {
+        x1: outerX + frameInset,
+        y1: offsetY,
+        x2: outerX + outerW - frameInset,
+        y2: offsetY
+      },
+      distance: Math.abs(worldPoint.y - offsetY),
+      guideMeta: {
+        orientation: "horizontal",
+        positionMm: Math.round((offsetY - (outerY + frameInset)) / scale)
+      }
+    });
+  });
+
+  const frameInnerLeft = outerX + frameInset;
+  const frameInnerTop = outerY + frameInset;
+  const frameInnerRight = outerX + outerW - frameInset;
+  const frameInnerBottom = outerY + outerH - frameInset;
+  candidates.push({
+    target: {
+      type: "frame-thickness",
+      label: `Kasa Kalinligi - ${Math.round(frameInset / scale)} mm`
+    },
+    line: { x1: frameInnerLeft, y1: outerY, x2: frameInnerLeft, y2: outerY + outerH },
+    distance: Math.abs(worldPoint.x - frameInnerLeft),
+    guideMeta: { orientation: "vertical", positionMm: 0 }
+  });
+  candidates.push({
+    target: {
+      type: "frame-thickness",
+      label: `Kasa Kalinligi - ${Math.round(frameInset / scale)} mm`
+    },
+    line: { x1: outerX, y1: frameInnerTop, x2: outerX + outerW, y2: frameInnerTop },
+    distance: Math.abs(worldPoint.y - frameInnerTop),
+    guideMeta: { orientation: "horizontal", positionMm: 0 }
+  });
+  candidates.push({
+    target: {
+      type: "frame-thickness",
+      label: `Kasa Kalinligi - ${Math.round(frameInset / scale)} mm`
+    },
+    line: { x1: frameInnerRight, y1: outerY, x2: frameInnerRight, y2: outerY + outerH },
+    distance: Math.abs(worldPoint.x - frameInnerRight),
+    guideMeta: { orientation: "vertical", positionMm: design.totalWidth }
+  });
+  candidates.push({
+    target: {
+      type: "frame-thickness",
+      label: `Kasa Kalinligi - ${Math.round(frameInset / scale)} mm`
+    },
+    line: { x1: outerX, y1: frameInnerBottom, x2: outerX + outerW, y2: frameInnerBottom },
+    distance: Math.abs(worldPoint.y - frameInnerBottom),
+    guideMeta: { orientation: "horizontal", positionMm: design.totalHeight }
+  });
+
+  const nearest = candidates
+    .filter((candidate) => candidate.distance <= threshold)
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  return nearest ?? null;
+}
+
+function pointInRect(
+  point: { x: number; y: number },
+  rect: { x: number; y: number; width: number; height: number }
+) {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+function buildTechnicalPanelReferences(
+  design: PvcDesign,
+  scale: number,
+  startX: number,
+  transomOffsets: number[]
+) {
+  const references: Array<{
+    refId: string;
+    label: string;
+    opening: string;
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+    badgeX: number;
+    badgeY: number;
+  }> = [];
+  let refIndex = 1;
+
+  design.transoms.forEach((transom, transomIndex) => {
+    let currentX = startX;
+    const top = transomOffsets[transomIndex];
+    const height = transom.height * scale;
+
+    transom.panels.forEach((panel, panelIndex) => {
+      const width = panel.width * scale;
+      const centerX = currentX + width / 2;
+      const centerY = top + height / 2;
+      const label = `P${String(refIndex).padStart(2, "0")}`;
+      const badgeX = currentX + (panelIndex % 2 === 0 ? 24 : width - 24);
+      const badgeY = top + 22;
+
+      references.push({
+        refId: `${transom.id}:${panel.id}`,
+        label,
+        opening: getOpeningShortLabel(panel.openingType),
+        width: panel.width,
+        height: transom.height,
+        centerX,
+        centerY,
+        badgeX,
+        badgeY
+      });
+
+      currentX += width;
+      refIndex += 1;
+    });
+  });
+
+  return references;
+}
+
+function getTechnicalScheduleHeight(referenceCount: number) {
+  const visibleRows = Math.min(10, referenceCount);
+  const hiddenCount = Math.max(0, referenceCount - visibleRows);
+  return 46 + visibleRows * 22 + (hiddenCount ? 22 : 0);
+}
+
+function buildBlockSelectionPreview(
+  design: PvcDesign,
+  multiSelection: PanelRef[],
+  scale: number,
+  startX: number,
+  transomOffsets: number[]
+): BlockSelectionPreview | null {
+  if (multiSelection.length < 2) {
+    return null;
+  }
+
+  const transomIds = [...new Set(multiSelection.map((item) => item.transomId))];
+  if (transomIds.length !== 1) {
+    return null;
+  }
+
+  const transomIndex = design.transoms.findIndex((item) => item.id === transomIds[0]);
+  if (transomIndex === -1) {
+    return null;
+  }
+
+  const transom = design.transoms[transomIndex];
+  const indexes = multiSelection
+    .map((item) => transom.panels.findIndex((panel) => panel.id === item.panelId))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+
+  if (!indexes.length) {
+    return null;
+  }
+
+  const startIndex = indexes[0];
+  const endIndex = indexes[indexes.length - 1];
+  if (endIndex - startIndex + 1 !== indexes.length) {
+    return null;
+  }
+
+  const panels = transom.panels.slice(startIndex, endIndex + 1);
+  const offsetMm = transom.panels.slice(0, startIndex).reduce((sum, panel) => sum + panel.width, 0);
+  const totalWidthMm = panels.reduce((sum, panel) => sum + panel.width, 0);
+  const x = startX + offsetMm * scale;
+  const y = transomOffsets[transomIndex];
+  const width = totalWidthMm * scale;
+  const height = transom.height * scale;
+
+  return {
+    transomId: transom.id,
+    totalWidthMm,
+    bounds: { x, y, width, height },
+    rowBounds: {
+      x: startX,
+      y,
+      width: design.totalWidth * scale,
+      height
+    },
+    panels: panels.map((panel) => ({
+      panelId: panel.id,
+      label: panel.label,
+      widthMm: panel.width,
+      openingType: panel.openingType
+    }))
+  };
+}
+
+function getOpeningShortLabel(openingType: OpeningType) {
+  switch (openingType) {
+    case "turn-right":
+      return "Sag";
+    case "turn-left":
+      return "Sol";
+    case "tilt-turn-right":
+      return "Vas";
+    case "sliding":
+      return "Sur";
+    default:
+      return "Sab";
+  }
 }
 
 function normalizeRect(x1: number, y1: number, x2: number, y2: number) {
