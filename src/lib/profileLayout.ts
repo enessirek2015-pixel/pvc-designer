@@ -1,5 +1,5 @@
 import type { OpeningType, PvcDesign } from "../types/pvc";
-import { profileSeriesCatalog } from "./systemCatalog";
+import { glassCatalog, materialSystemCatalog, profileSeriesCatalog } from "./systemCatalog";
 
 interface LayoutRect {
   x: number;
@@ -38,13 +38,19 @@ export function buildProfileLayout(
   openingType: OpeningType
 ): ProfileLayout {
   const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
-  const fixedInset = Math.max(10, Math.round(profileSpec.depthMm * 0.18 * scale));
-  const sashInset = Math.max(14, Math.round(profileSpec.depthMm * 0.28 * scale));
-  const beadInset = Math.max(8, Math.round(profileSpec.depthMm * 0.12 * scale));
-  const frameChannelInset = Math.max(4, Math.round(fixedInset * 0.45));
-  const frameCoreInset = Math.max(frameChannelInset + 3, Math.round(fixedInset * 0.72));
-  const sashChannelInset = Math.max(4, Math.round(sashInset * 0.42));
-  const sashCoreInset = Math.max(sashChannelInset + 3, Math.round(sashInset * 0.68));
+  const materialSpec = materialSystemCatalog[design.materials.materialSystem];
+  const glassSpec = glassCatalog[design.materials.glassType];
+  const frameWall = Math.max(10, Math.round(design.outerFrameThickness * scale));
+  const sashInset = Math.max(12, Math.round((profileSpec.depthMm * 0.18 + materialSpec.sashAdjustmentMm * 0.45) * scale));
+  const glassPocket = Math.max(
+    8,
+    Math.round((profileSpec.beadAllowanceMm + materialSpec.glassAdjustmentMm * 0.4 + glassSpec.nominalThicknessMm * 0.16) * scale)
+  );
+  const beadInset = Math.max(6, Math.round(profileSpec.beadAllowanceMm * scale * 0.52));
+  const frameChannelInset = Math.max(4, Math.round(frameWall * 0.42));
+  const frameCoreInset = Math.max(frameChannelInset + 3, Math.round(frameWall * 0.72));
+  const sashChannelInset = Math.max(4, Math.round(sashInset * 0.38));
+  const sashCoreInset = Math.max(sashChannelInset + 3, Math.round(sashInset * 0.66));
 
   const frameRect = { x, y, width, height };
   const frameDetailRects = [
@@ -53,7 +59,7 @@ export function buildProfileLayout(
   ].filter((rect) => rect.width > 26 && rect.height > 26);
 
   if (openingType === "fixed") {
-    const glassRect = insetRect(frameRect, fixedInset + beadInset);
+    const glassRect = insetRect(frameRect, frameWall + glassPocket);
     const beadRect = insetRect(glassRect, Math.max(3, Math.round(beadInset * 0.38)));
     return {
       frameRect,
@@ -69,8 +75,8 @@ export function buildProfileLayout(
     };
   }
 
-  const sashRect = insetRect(frameRect, sashInset);
-  const glassRect = insetRect(sashRect, beadInset);
+  const sashRect = insetRect(frameRect, Math.max(8, Math.round(frameWall * 0.52)));
+  const glassRect = insetRect(sashRect, Math.max(8, Math.round(glassPocket * 0.92)));
   const beadRect = insetRect(glassRect, Math.max(3, Math.round(beadInset * 0.36)));
   return {
     frameRect,

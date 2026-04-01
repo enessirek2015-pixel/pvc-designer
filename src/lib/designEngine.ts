@@ -1,5 +1,5 @@
 import type { OpeningType, PvcDesign } from "../types/pvc";
-import { glassCatalog, hardwareCatalog, profileSeriesCatalog } from "./systemCatalog";
+import { glassCatalog, hardwareCatalog, materialSystemCatalog, profileSeriesCatalog } from "./systemCatalog";
 
 export type DiagnosticSeverity = "info" | "warning" | "error";
 
@@ -75,7 +75,13 @@ export function buildDesignSnapshot(design: PvcDesign): DesignSnapshot {
     0
   );
   const glassAreaM2 = design.transoms.reduce(
-    (sum, transom) => sum + transom.panels.reduce((sub, panel) => sub + calculatePanelArea(panel.width, transom.height), 0),
+    (sum, transom) =>
+      sum +
+      transom.panels.reduce(
+        (sub, panel) =>
+          sub + buildPanelEngineering(design, panel.width, transom.height, panel.openingType).approxGlassAreaM2,
+        0
+      ),
     0
   );
 
@@ -189,7 +195,7 @@ export function buildDesignHealth(design: PvcDesign): DesignHealth {
     }
 
     transom.panels.forEach((panel, panelIndex) => {
-      const panelEngineering = buildPanelEngineering(design, panel.width, transom.height);
+      const panelEngineering = buildPanelEngineering(design, panel.width, transom.height, panel.openingType);
 
       if (panel.width < MIN_PANEL_WIDTH) {
         diagnostics.push({
@@ -314,14 +320,53 @@ function isOperable(openingType: OpeningType) {
   return openingType !== "fixed";
 }
 
-export function buildPanelEngineering(design: PvcDesign, panelWidth: number, transomHeight: number): PanelEngineering {
+export function buildPanelEngineering(
+  design: PvcDesign,
+  panelWidth: number,
+  transomHeight: number,
+  openingType: OpeningType = "fixed"
+): PanelEngineering {
   const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
   const glassSpec = glassCatalog[design.materials.glassType];
   const hardwareSpec = hardwareCatalog[design.materials.hardwareQuality];
-  const approxSashWidthMm = Math.max(160, panelWidth - profileSpec.sashReductionMm);
-  const approxSashHeightMm = Math.max(160, transomHeight - profileSpec.sashReductionMm);
-  const approxGlassWidthMm = Math.max(120, panelWidth - profileSpec.glassReductionMm);
-  const approxGlassHeightMm = Math.max(120, transomHeight - profileSpec.glassReductionMm);
+  const materialSpec = materialSystemCatalog[design.materials.materialSystem];
+  const frameDelta = Math.max(0, design.outerFrameThickness - profileSpec.recommendedFrameMm);
+  const mullionDelta = Math.max(0, design.mullionThickness - profileSpec.recommendedMullionMm);
+  const sashOffsetFactor = openingType === "fixed" ? 0.5 : 1;
+  const approxSashWidthMm = Math.max(
+    160,
+    panelWidth -
+      (profileSpec.sashReductionMm * sashOffsetFactor +
+        materialSpec.sashAdjustmentMm +
+        frameDelta * 0.8 +
+        mullionDelta * 0.35)
+  );
+  const approxSashHeightMm = Math.max(
+    160,
+    transomHeight -
+      (profileSpec.sashReductionMm * sashOffsetFactor +
+        materialSpec.sashAdjustmentMm +
+        frameDelta * 0.8 +
+        mullionDelta * 0.55)
+  );
+  const approxGlassWidthMm = Math.max(
+    120,
+    panelWidth -
+      (profileSpec.glassReductionMm +
+        materialSpec.glassAdjustmentMm +
+        glassSpec.nominalThicknessMm * 0.55 +
+        frameDelta * 1.6 +
+        mullionDelta * 1.2)
+  );
+  const approxGlassHeightMm = Math.max(
+    120,
+    transomHeight -
+      (profileSpec.glassReductionMm +
+        materialSpec.glassAdjustmentMm +
+        glassSpec.nominalThicknessMm * 0.55 +
+        frameDelta * 1.6 +
+        mullionDelta * 1.45)
+  );
   const approxGlassAreaM2 = calculatePanelArea(approxGlassWidthMm, approxGlassHeightMm);
   const approxSashWeightKg = approxGlassAreaM2 * glassSpec.weightKgM2;
   const grossAreaM2 = calculatePanelArea(panelWidth, transomHeight);

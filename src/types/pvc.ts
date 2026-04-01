@@ -42,12 +42,20 @@ export type ProfileSeries =
   | "veka-softline"
   | "rehau-synego";
 
+export type MaterialSystem =
+  | "aldoks"
+  | "c60"
+  | "thermal-insulation"
+  | "sliding-system"
+  | "system-series";
+
 export type HardwareQuality = "economy" | "standard" | "premium";
 
 export interface DesignMaterials {
   frameColor: FrameColor;
   glassType: GlassType;
   profileSeries: ProfileSeries;
+  materialSystem: MaterialSystem;
   hardwareQuality: HardwareQuality;
 }
 
@@ -96,4 +104,5 @@ export interface DesktopApi {
   saveProject: (payload: SaveDesignPayload) => Promise<{ canceled: boolean; path?: string }>;
   openProject: () => Promise<{ canceled: boolean; content?: PvcDesign; path?: string }>;
   printBom: (html: string) => Promise<void>;
+  printTechnical: (html: string) => Promise<void>;
 }

@@ -1,4 +1,4 @@
-import type { GlassType, HardwareQuality, ProfileSeries } from "../types/pvc";
+import type { GlassType, HardwareQuality, MaterialSystem, ProfileSeries } from "../types/pvc";
 
 export interface ProfileSeriesSpec {
   id: ProfileSeries;
@@ -21,6 +21,8 @@ export interface GlassSpec {
   id: GlassType;
   label: string;
   buildUp: string;
+  thicknessLabel: string;
+  nominalThicknessMm: number;
   weightKgM2: number;
   thermalClass: "basic" | "good" | "high";
 }
@@ -30,6 +32,16 @@ export interface HardwareSpec {
   label: string;
   maxSashWeightKg: number;
   hingeCount: number;
+}
+
+export interface MaterialSystemSpec {
+  id: MaterialSystem;
+  label: string;
+  description: string;
+  recommendedFrameMm: number;
+  recommendedMullionMm: number;
+  sashAdjustmentMm: number;
+  glassAdjustmentMm: number;
 }
 
 export const profileSeriesCatalog: Record<ProfileSeries, ProfileSeriesSpec> = {
@@ -132,20 +144,148 @@ export const profileSeriesCatalog: Record<ProfileSeries, ProfileSeriesSpec> = {
 };
 
 export const glassCatalog: Record<GlassType, GlassSpec> = {
-  "single-clear": { id: "single-clear", label: "Tek Cam Clear", buildUp: "4 mm", weightKgM2: 10, thermalClass: "basic" },
-  "double-clear": { id: "double-clear", label: "Cift Cam Clear", buildUp: "4+12+4", weightKgM2: 20, thermalClass: "good" },
-  "triple-clear": { id: "triple-clear", label: "Uc Cam Clear", buildUp: "4+12+4+12+4", weightKgM2: 30, thermalClass: "high" },
-  "double-low-e": { id: "double-low-e", label: "Cift Cam Low-E", buildUp: "4+16+4 Low-E", weightKgM2: 20, thermalClass: "high" },
-  "triple-low-e": { id: "triple-low-e", label: "Uc Cam Low-E", buildUp: "4+12+4+12+4 Low-E", weightKgM2: 30, thermalClass: "high" },
-  "tempered-clear": { id: "tempered-clear", label: "Temperli", buildUp: "6 mm temperli", weightKgM2: 15, thermalClass: "basic" },
-  "laminated-clear": { id: "laminated-clear", label: "Lamine", buildUp: "4+4 lamine", weightKgM2: 20, thermalClass: "good" },
-  "reflective-blue": { id: "reflective-blue", label: "Reflekte Mavi", buildUp: "6 mm reflekte", weightKgM2: 15, thermalClass: "good" },
-  "reflective-smoke": { id: "reflective-smoke", label: "Reflekte Fume", buildUp: "6 mm reflekte", weightKgM2: 15, thermalClass: "good" },
-  frosted: { id: "frosted", label: "Buzlu", buildUp: "4+12+4 satin", weightKgM2: 20, thermalClass: "good" }
+  "single-clear": {
+    id: "single-clear",
+    label: "Tek Cam Clear",
+    buildUp: "4 mm",
+    thicknessLabel: "4 mm",
+    nominalThicknessMm: 4,
+    weightKgM2: 10,
+    thermalClass: "basic"
+  },
+  "double-clear": {
+    id: "double-clear",
+    label: "Cift Cam Clear",
+    buildUp: "4+12+4",
+    thicknessLabel: "20 mm",
+    nominalThicknessMm: 20,
+    weightKgM2: 20,
+    thermalClass: "good"
+  },
+  "triple-clear": {
+    id: "triple-clear",
+    label: "Uc Cam Clear",
+    buildUp: "4+12+4+12+4",
+    thicknessLabel: "36 mm",
+    nominalThicknessMm: 36,
+    weightKgM2: 30,
+    thermalClass: "high"
+  },
+  "double-low-e": {
+    id: "double-low-e",
+    label: "Cift Cam Low-E",
+    buildUp: "4+16+4 Low-E",
+    thicknessLabel: "24 mm",
+    nominalThicknessMm: 24,
+    weightKgM2: 20,
+    thermalClass: "high"
+  },
+  "triple-low-e": {
+    id: "triple-low-e",
+    label: "Uc Cam Low-E",
+    buildUp: "4+12+4+12+4 Low-E",
+    thicknessLabel: "36 mm",
+    nominalThicknessMm: 36,
+    weightKgM2: 30,
+    thermalClass: "high"
+  },
+  "tempered-clear": {
+    id: "tempered-clear",
+    label: "Temperli",
+    buildUp: "6 mm temperli",
+    thicknessLabel: "6 mm",
+    nominalThicknessMm: 6,
+    weightKgM2: 15,
+    thermalClass: "basic"
+  },
+  "laminated-clear": {
+    id: "laminated-clear",
+    label: "Lamine",
+    buildUp: "4+4 lamine",
+    thicknessLabel: "8 mm",
+    nominalThicknessMm: 8,
+    weightKgM2: 20,
+    thermalClass: "good"
+  },
+  "reflective-blue": {
+    id: "reflective-blue",
+    label: "Reflekte Mavi",
+    buildUp: "6 mm reflekte",
+    thicknessLabel: "6 mm",
+    nominalThicknessMm: 6,
+    weightKgM2: 15,
+    thermalClass: "good"
+  },
+  "reflective-smoke": {
+    id: "reflective-smoke",
+    label: "Reflekte Fume",
+    buildUp: "6 mm reflekte",
+    thicknessLabel: "6 mm",
+    nominalThicknessMm: 6,
+    weightKgM2: 15,
+    thermalClass: "good"
+  },
+  frosted: {
+    id: "frosted",
+    label: "Buzlu",
+    buildUp: "4+12+4 satin",
+    thicknessLabel: "20 mm",
+    nominalThicknessMm: 20,
+    weightKgM2: 20,
+    thermalClass: "good"
+  }
 };
 
 export const hardwareCatalog: Record<HardwareQuality, HardwareSpec> = {
   economy: { id: "economy", label: "Ekonomi", maxSashWeightKg: 80, hingeCount: 2 },
   standard: { id: "standard", label: "Standart", maxSashWeightKg: 110, hingeCount: 2 },
   premium: { id: "premium", label: "Premium", maxSashWeightKg: 130, hingeCount: 3 }
+};
+
+export const materialSystemCatalog: Record<MaterialSystem, MaterialSystemSpec> = {
+  aldoks: {
+    id: "aldoks",
+    label: "Aldoks",
+    description: "Aluminyum destekli cephe ve ticari dograma karakteri.",
+    recommendedFrameMm: 68,
+    recommendedMullionMm: 58,
+    sashAdjustmentMm: 10,
+    glassAdjustmentMm: 16
+  },
+  c60: {
+    id: "c60",
+    label: "C60",
+    description: "60 mm sinifi standart pencere sistemi.",
+    recommendedFrameMm: 60,
+    recommendedMullionMm: 54,
+    sashAdjustmentMm: 6,
+    glassAdjustmentMm: 10
+  },
+  "thermal-insulation": {
+    id: "thermal-insulation",
+    label: "Isi Yalitimi",
+    description: "Yuksek yalitim icin daha derin profil ve daha kalin cam boslugu.",
+    recommendedFrameMm: 76,
+    recommendedMullionMm: 70,
+    sashAdjustmentMm: 14,
+    glassAdjustmentMm: 20
+  },
+  "sliding-system": {
+    id: "sliding-system",
+    label: "Surme Sistem",
+    description: "Surme dograma akisi icin daha genis kasa ve ray karakteri.",
+    recommendedFrameMm: 80,
+    recommendedMullionMm: 64,
+    sashAdjustmentMm: 18,
+    glassAdjustmentMm: 14
+  },
+  "system-series": {
+    id: "system-series",
+    label: "Sistem Serisi",
+    description: "Seri tavsiyelerini merkeze alan dengeli genel kullanim.",
+    recommendedFrameMm: 70,
+    recommendedMullionMm: 60,
+    sashAdjustmentMm: 8,
+    glassAdjustmentMm: 12
+  }
 };

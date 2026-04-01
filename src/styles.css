@@ -255,6 +255,11 @@ select {
   background: rgba(255, 255, 255, 0.56);
 }
 
+.hero-button.compact {
+  padding: 10px 14px;
+  border-radius: 14px;
+}
+
 .template-strip,
 .canvas-stage,
 .inspector-card {
@@ -303,6 +308,13 @@ select {
   color: #425167;
 }
 
+.template-strip-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .template-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -312,11 +324,9 @@ select {
 .template-card {
   border: 1px solid rgba(31, 41, 55, 0.08);
   border-radius: 20px;
-  padding: 14px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(243, 246, 250, 0.95) 100%);
-  text-align: left;
-  cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  overflow: hidden;
 }
 
 .template-card:hover {
@@ -327,6 +337,15 @@ select {
 .template-card.selected {
   border-color: rgba(232, 139, 45, 0.8);
   box-shadow: 0 18px 28px rgba(232, 139, 45, 0.16);
+}
+
+.template-surface {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 14px 14px 10px;
+  cursor: pointer;
 }
 
 .template-preview {
@@ -357,6 +376,37 @@ select {
 .template-copy span {
   font-size: 13px;
   color: #5d6878;
+}
+
+.template-source-badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(31, 72, 127, 0.08);
+  color: #385477;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.template-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.template-icon-button {
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #2b3a4d;
+  cursor: pointer;
+}
+
+.template-icon-button.danger {
+  color: #8e2d2d;
+  background: rgba(255, 238, 238, 0.84);
 }
 
 .work-grid {
@@ -482,8 +532,8 @@ select {
 }
 
 .ruler-band {
-  fill: rgba(240, 244, 249, 0.94);
-  stroke: rgba(123, 139, 160, 0.22);
+  fill: rgba(248, 250, 253, 0.92);
+  stroke: rgba(123, 139, 160, 0.14);
 }
 
 .ruler-band.technical {
@@ -497,8 +547,8 @@ select {
 }
 
 .ruler-corner {
-  fill: rgba(222, 230, 241, 0.92);
-  stroke: rgba(123, 139, 160, 0.22);
+  fill: rgba(241, 246, 251, 0.94);
+  stroke: rgba(123, 139, 160, 0.12);
 }
 
 .ruler-corner.technical {
@@ -512,8 +562,8 @@ select {
 }
 
 .ruler-tick {
-  stroke: rgba(75, 92, 116, 0.62);
-  stroke-width: 1.2;
+  stroke: rgba(75, 92, 116, 0.48);
+  stroke-width: 1;
 }
 
 .ruler-tick.technical {
@@ -525,9 +575,9 @@ select {
 }
 
 .ruler-text {
-  fill: #556577;
-  font-size: 10px;
-  font-weight: 700;
+  fill: #6a7786;
+  font-size: 9px;
+  font-weight: 600;
 }
 
 .ruler-text.technical {
@@ -540,7 +590,7 @@ select {
 
 .ruler-cursor {
   stroke: rgba(240, 138, 24, 0.92);
-  stroke-width: 1.4;
+  stroke-width: 1.2;
 }
 
 .small-text {
@@ -981,9 +1031,15 @@ select {
 }
 
 .crosshair-line {
-  stroke: rgba(89, 110, 140, 0.32);
-  stroke-width: 1;
-  stroke-dasharray: 6 6;
+  stroke: rgba(89, 110, 140, 0.24);
+  stroke-width: 0.9;
+  stroke-dasharray: 4 8;
+}
+
+.crosshair-dot {
+  fill: rgba(240, 138, 24, 0.96);
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.9;
 }
 
 .drag-preview-box {
@@ -1164,6 +1220,33 @@ select {
   border-color: rgba(31, 41, 55, 0.08);
 }
 
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 15, 23, 0.38);
+  backdrop-filter: blur(10px);
+  z-index: 40;
+}
+
+.modal-card {
+  width: min(480px, calc(100vw - 32px));
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(253, 254, 255, 0.98) 0%, rgba(243, 247, 251, 0.98) 100%);
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  box-shadow: 0 30px 80px rgba(14, 22, 34, 0.24);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .layer-chip {
   min-width: 84px;
 }
@@ -1199,6 +1282,19 @@ select {
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.technical-title-chip {
+  fill: rgba(244, 223, 177, 0.14);
+  stroke: rgba(244, 223, 177, 0.42);
+  stroke-width: 1;
+}
+
+.technical-title-chip-text {
+  fill: rgba(252, 244, 218, 0.98);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
 }
 
 .technical-title-meta {
@@ -1438,11 +1534,28 @@ select {
   stroke-dasharray: 6 6;
 }
 
+.command-preview-shell.invalid {
+  fill: rgba(255, 98, 98, 0.08);
+  stroke: rgba(255, 124, 124, 0.92);
+}
+
+.command-preview-shell.suggestion {
+  fill: rgba(66, 206, 141, 0.08);
+  stroke: rgba(126, 232, 176, 0.92);
+  stroke-dasharray: 4 4;
+}
+
 .command-preview-slot {
   fill: rgba(244, 223, 177, 0.12);
   stroke: rgba(244, 223, 177, 0.72);
   stroke-width: 1;
   stroke-dasharray: 3 3;
+}
+
+.command-preview-slot.invalid {
+  fill: rgba(255, 98, 98, 0.12);
+  stroke: rgba(255, 124, 124, 0.92);
+  stroke-width: 1.2;
 }
 
 .command-preview-shell.frame {
@@ -1460,6 +1573,16 @@ select {
   stroke: rgba(74, 124, 242, 0.78);
   stroke-width: 1.2;
   stroke-dasharray: 6 5;
+}
+
+.command-preview-tile.warning {
+  fill: rgba(255, 203, 92, 0.16);
+  stroke: rgba(255, 216, 121, 0.94);
+}
+
+.command-preview-tile.error {
+  fill: rgba(255, 98, 98, 0.16);
+  stroke: rgba(255, 124, 124, 0.94);
 }
 
 .command-preview-tile.copy {
@@ -1485,6 +1608,11 @@ select {
 .command-preview-tile.distribute {
   fill: rgba(87, 190, 225, 0.1);
   stroke: rgba(87, 190, 225, 0.8);
+}
+
+.command-preview-tile.guide {
+  fill: rgba(126, 214, 110, 0.12);
+  stroke: rgba(126, 214, 110, 0.86);
 }
 
 .command-preview-tile.grid-row {
@@ -1660,10 +1788,40 @@ select {
   font-weight: 800;
 }
 
+.technical-section-chip {
+  fill: rgba(193, 141, 252, 0.12);
+  stroke: rgba(193, 141, 252, 0.34);
+  stroke-width: 1;
+}
+
+.technical-section-chip.secondary {
+  fill: rgba(74, 124, 242, 0.12);
+  stroke: rgba(74, 124, 242, 0.34);
+}
+
+.technical-section-chip-text {
+  fill: rgba(236, 223, 255, 0.96);
+  font-size: 8.6px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.technical-section-chip-text.secondary {
+  fill: rgba(209, 227, 255, 0.96);
+  font-size: 8px;
+}
+
 .technical-section-frame {
   fill: rgba(105, 185, 92, 0.1);
   stroke: rgba(105, 185, 92, 0.92);
   stroke-width: 1.2;
+}
+
+.technical-section-frame.inner {
+  fill: none;
+  stroke: rgba(160, 223, 146, 0.54);
+  stroke-width: 0.9;
+  stroke-dasharray: 3 3;
 }
 
 .technical-section-sash {
@@ -1672,16 +1830,58 @@ select {
   stroke-width: 1.1;
 }
 
+.technical-section-sash.inner {
+  fill: none;
+  stroke: rgba(226, 205, 255, 0.54);
+  stroke-width: 0.9;
+}
+
 .technical-section-glass {
   fill: rgba(74, 124, 242, 0.16);
   stroke: rgba(74, 124, 242, 0.88);
   stroke-width: 1;
 }
 
+.technical-section-bead {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: rgba(225, 238, 255, 0.44);
+  stroke-width: 0.9;
+  stroke-dasharray: 2 2;
+}
+
 .technical-section-divider {
   stroke: rgba(244, 223, 177, 0.62);
   stroke-width: 1;
   stroke-dasharray: 3 4;
+}
+
+.technical-section-chamber {
+  stroke: rgba(118, 214, 101, 0.74);
+  stroke-width: 0.9;
+}
+
+.technical-section-chamber.inner {
+  stroke: rgba(206, 171, 255, 0.54);
+  stroke-dasharray: 2.5 2.5;
+}
+
+.technical-section-thermal {
+  stroke: rgba(244, 223, 177, 0.9);
+  stroke-width: 1;
+  stroke-dasharray: 1.5 3;
+}
+
+.technical-section-drain {
+  stroke: rgba(120, 202, 255, 0.82);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+}
+
+.technical-section-scale {
+  fill: rgba(151, 166, 186, 0.94);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
 .technical-section-meta {
@@ -1808,6 +2008,94 @@ select {
   stroke-dasharray: 4 4;
 }
 
+.command-preview-guide-line {
+  stroke: rgba(126, 214, 110, 0.92);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 5;
+}
+
+.command-preview-guide-line.warning {
+  stroke: rgba(255, 215, 112, 0.92);
+}
+
+.command-preview-guide-line.success {
+  stroke: rgba(118, 228, 163, 0.98);
+  stroke-width: 1.8;
+}
+
+.command-preview-guide-line.error {
+  stroke: rgba(255, 124, 124, 0.92);
+}
+
+.inline-dimension-editor {
+  position: absolute;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #f7fafc;
+  box-shadow: 0 20px 40px rgba(15, 23, 36, 0.24);
+  transform: translate(-50%, -130%);
+}
+
+.inline-dimension-editor input {
+  width: 88px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7fafc;
+}
+
+.hud-dimension-editor {
+  position: absolute;
+  z-index: 29;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(13, 20, 31, 0.94);
+  color: #f8fbff;
+  box-shadow: 0 18px 36px rgba(9, 16, 27, 0.28);
+  border: 1px solid rgba(255, 173, 76, 0.18);
+  transform: translate(-50%, -120%);
+}
+
+.hud-dimension-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(240, 246, 255, 0.9);
+}
+
+.hud-dimension-unit {
+  font-size: 11px;
+  color: rgba(240, 246, 255, 0.7);
+}
+
+.hud-dimension-editor input {
+  width: 90px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fbff;
+}
+
+.hud-dimension-editor button {
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
+  color: #162233;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .command-preview-reference-line.ortho {
   stroke: rgba(109, 226, 173, 0.84);
   stroke-width: 1.5;
@@ -1836,11 +2124,38 @@ select {
   stroke-width: 1.1;
 }
 
+.command-preview-badge.warning {
+  fill: rgba(55, 41, 9, 0.96);
+  stroke: rgba(255, 213, 110, 0.68);
+}
+
+.command-preview-badge.error {
+  fill: rgba(64, 16, 22, 0.96);
+  stroke: rgba(255, 124, 124, 0.72);
+}
+
+.command-preview-badge.success {
+  fill: rgba(13, 54, 34, 0.96);
+  stroke: rgba(118, 228, 163, 0.66);
+}
+
 .command-preview-badge-text {
   fill: #fdf7ea;
   font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.command-preview-badge-text.warning {
+  fill: #fff1be;
+}
+
+.command-preview-badge-text.error {
+  fill: #ffd4d4;
+}
+
+.command-preview-badge-text.success {
+  fill: #caf6da;
 }
 
 .placement-telemetry-shell {
@@ -2257,6 +2572,10 @@ select {
   border: 1px solid rgba(31, 41, 55, 0.08);
 }
 
+.material-card.accent {
+  background: linear-gradient(135deg, #eef8f2 0%, #d9eee2 100%);
+}
+
 .material-card strong {
   color: #1d2735;
 }
@@ -2315,6 +2634,16 @@ select {
 .svg-dimension-text {
   font-size: 14px;
   fill: #415066;
+}
+
+.editable-dimension-text {
+  cursor: text;
+}
+
+.glass-thickness-label {
+  fill: #4d647d;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .svg-dimension {

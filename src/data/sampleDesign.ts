@@ -1,15 +1,20 @@
 import type { PvcDesign } from "../types/pvc";
 
-function baseMaterials(): PvcDesign["materials"] {
+function nextDesignId(prefix: string) {
+  return `${prefix}-${Date.now()}`;
+}
+
+export function createBaseMaterials(): PvcDesign["materials"] {
   return {
     frameColor: "white",
     glassType: "double-clear",
     profileSeries: "comfort-70",
+    materialSystem: "c60",
     hardwareQuality: "standard"
   };
 }
 
-function baseCustomer(): PvcDesign["customer"] {
+export function createBaseCustomer(): PvcDesign["customer"] {
   return {
     customerName: "",
     projectCode: "",
@@ -18,8 +23,49 @@ function baseCustomer(): PvcDesign["customer"] {
   };
 }
 
-function baseGuides(): PvcDesign["guides"] {
+export function createBaseGuides(): PvcDesign["guides"] {
   return [];
+}
+
+export function createBlankDesign({
+  name = "Yeni Proje",
+  totalWidth = 1500,
+  totalHeight = 1500,
+  outerFrameThickness = 70,
+  mullionThickness = 60,
+  materials,
+  customer
+}: Partial<
+  Pick<PvcDesign, "name" | "totalWidth" | "totalHeight" | "outerFrameThickness" | "mullionThickness"> & {
+    materials: Partial<PvcDesign["materials"]>;
+    customer: Partial<PvcDesign["customer"]>;
+  }
+> = {}): PvcDesign {
+  return {
+    id: nextDesignId("design"),
+    name,
+    totalWidth,
+    totalHeight,
+    outerFrameThickness,
+    mullionThickness,
+    guides: createBaseGuides(),
+    materials: { ...createBaseMaterials(), ...materials },
+    customer: { ...createBaseCustomer(), ...customer },
+    transoms: [
+      {
+        id: nextDesignId("transom"),
+        height: totalHeight,
+        panels: [
+          {
+            id: nextDesignId("panel"),
+            width: totalWidth,
+            openingType: "fixed",
+            label: "Panel 1"
+          }
+        ]
+      }
+    ]
+  };
 }
 
 export const sampleDesign: PvcDesign = {
@@ -29,9 +75,9 @@ export const sampleDesign: PvcDesign = {
   totalHeight: 1700,
   outerFrameThickness: 70,
   mullionThickness: 60,
-  guides: baseGuides(),
-  materials: baseMaterials(),
-  customer: baseCustomer(),
+  guides: createBaseGuides(),
+  materials: createBaseMaterials(),
+  customer: createBaseCustomer(),
   transoms: [
     {
       id: "transom-top",
@@ -63,9 +109,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1400,
     outerFrameThickness: 70,
     mullionThickness: 60,
-    guides: baseGuides(),
-    materials: baseMaterials(),
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: createBaseMaterials(),
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "single-main",
@@ -81,9 +127,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1400,
     outerFrameThickness: 70,
     mullionThickness: 60,
-    guides: baseGuides(),
-    materials: baseMaterials(),
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: createBaseMaterials(),
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "double-main",
@@ -102,9 +148,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 2100,
     outerFrameThickness: 80,
     mullionThickness: 60,
-    guides: baseGuides(),
-    materials: { ...baseMaterials(), frameColor: "anthracite", glassType: "triple-low-e" },
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: { ...createBaseMaterials(), frameColor: "anthracite", glassType: "triple-low-e", materialSystem: "sliding-system" },
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "slider-main",
@@ -124,9 +170,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1200,
     outerFrameThickness: 70,
     mullionThickness: 55,
-    guides: baseGuides(),
-    materials: { ...baseMaterials(), profileSeries: "premium-76" },
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: { ...createBaseMaterials(), profileSeries: "premium-76", materialSystem: "system-series" },
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "triple-main",
@@ -146,9 +192,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 1700,
     outerFrameThickness: 70,
     mullionThickness: 60,
-    guides: baseGuides(),
-    materials: { ...baseMaterials(), glassType: "double-low-e" },
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: { ...createBaseMaterials(), glassType: "double-low-e", materialSystem: "thermal-insulation" },
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "vas-top",
@@ -177,9 +223,9 @@ export const designTemplates: PvcDesign[] = [
     totalHeight: 2200,
     outerFrameThickness: 70,
     mullionThickness: 60,
-    guides: baseGuides(),
-    materials: { ...baseMaterials(), frameColor: "golden-oak", hardwareQuality: "premium" },
-    customer: baseCustomer(),
+    guides: createBaseGuides(),
+    materials: { ...createBaseMaterials(), frameColor: "golden-oak", hardwareQuality: "premium", materialSystem: "aldoks" },
+    customer: createBaseCustomer(),
     transoms: [
       {
         id: "door-window-top",

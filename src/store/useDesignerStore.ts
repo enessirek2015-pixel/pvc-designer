@@ -6,6 +6,7 @@ import type {
   GlassType,
   GuideOrientation,
   HardwareQuality,
+  MaterialSystem,
   OpeningType,
   PanelDefinition,
   ProfileSeries,
@@ -47,6 +48,7 @@ interface DesignerState {
   setFrameColor: (value: FrameColor) => void;
   setGlassType: (value: GlassType) => void;
   setProfileSeries: (value: ProfileSeries) => void;
+  setMaterialSystem: (value: MaterialSystem) => void;
   setHardwareQuality: (value: HardwareQuality) => void;
   setCustomerField: (field: keyof PvcDesign["customer"], value: string) => void;
   setPanelWidthById: (transomId: string, panelId: string, width: number) => void;
@@ -121,7 +123,7 @@ function cloneDesign(design: PvcDesign): PvcDesign {
   const guidesSource = (design as PvcDesign & { guides?: ReferenceGuide[] }).guides ?? [];
   return {
     ...design,
-    materials: { ...design.materials },
+    materials: { ...design.materials, materialSystem: design.materials.materialSystem ?? "c60" },
     customer: { ...design.customer },
     guides: guidesSource.map((guide) => ({ ...guide })),
     transoms: design.transoms.map((transom) => ({
@@ -313,6 +315,15 @@ function resolveRepeatedSpan(sourceSpan: number, availableSpan: number, count: n
   }
 
   return perCopy;
+}
+
+function resolveSinglePlacementSpan(sourceSpan: number, targetSpan: number, minSpan: number) {
+  const availableSpan = targetSpan - minSpan;
+  if (availableSpan < minSpan) {
+    return null;
+  }
+
+  return Math.max(minSpan, Math.min(sourceSpan, availableSpan));
 }
 
 function getContiguousGroupInfo(transom: TransomDefinition, panels: PanelRef[]) {
@@ -597,6 +608,13 @@ export const useDesignerStore = create<DesignerState>((set) => ({
       })
     ),
 
+  setMaterialSystem: (value) =>
+    set((state) =>
+      withHistory(state, (draft) => {
+        draft.design.materials.materialSystem = value;
+      })
+    ),
+
   setHardwareQuality: (value) =>
     set((state) =>
       withHistory(state, (draft) => {
@@ -859,11 +877,10 @@ export const useDesignerStore = create<DesignerState>((set) => ({
         }
 
         const targetPanel = targetTransom.panels[targetPanelIndex];
-        if (targetPanel.width < 220) {
+        const newWidth = resolveSinglePlacementSpan(sourcePanel.width, targetPanel.width, 100);
+        if (!newWidth) {
           return;
         }
-
-        const newWidth = Math.max(100, Math.round(targetPanel.width / 2));
         const nextTargetPanel = { ...targetPanel, width: targetPanel.width - newWidth };
         const newPanel: PanelDefinition = {
           ...sourcePanel,
@@ -936,11 +953,10 @@ export const useDesignerStore = create<DesignerState>((set) => ({
         }
 
         const targetTransom = draft.design.transoms[targetTransomIndex];
-        if (targetTransom.height < 320) {
+        const newHeight = resolveSinglePlacementSpan(sourceTransom.height, targetTransom.height, 150);
+        if (!newHeight) {
           return;
         }
-
-        const newHeight = Math.max(150, Math.round(targetTransom.height / 2));
         const newTransom: TransomDefinition = {
           ...sourceTransom,
           id: `${sourceTransom.id}-copy-${side}-${Date.now()}`,
@@ -1045,14 +1061,17 @@ export const useDesignerStore = create<DesignerState>((set) => ({
         }
 
         const targetPanel = targetTransom.panels[targetIndex];
-        if (targetPanel.width < 220) {
+        const sourcePanel = sourceTransom.panels[sourceIndex];
+        if (!sourcePanel) {
+          return;
+        }
+        const newWidth = resolveSinglePlacementSpan(sourcePanel.width, targetPanel.width, 100);
+        if (!newWidth) {
           return;
         }
 
         const [movedPanel] = sourceTransom.panels.splice(sourceIndex, 1);
         absorbRemovedPanelWidth(sourceTransom, sourceIndex, movedPanel.width);
-
-        const newWidth = Math.max(100, Math.round(targetPanel.width / 2));
         targetTransom.panels[targetIndex] = {
           ...targetPanel,
           width: targetPanel.width - newWidth

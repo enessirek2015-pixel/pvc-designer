@@ -44,6 +44,30 @@
 
 ## Tamamlanan Buyuk Ozellikler
 
+### Nisan 2026 - Fiziksel Layout Paketi
+
+- `src/lib/canvasLayout.ts` eklendi
+  - tek merkezden fiziksel kanvas geometrisi uretiyor
+  - panel hucre alani ve gorunur panel alani ayrildi
+  - dikey kayit ve yatay kayit artik gercek fiziksel rect olarak hesaplanıyor
+- ana kanvas artik bu layout motorunu kullaniyor
+  - panel render
+  - dikey kayit render
+  - yatay kayit render
+  - secim kutulari
+  - multi secim envelope
+  - marquee secim
+  - teknik referans rozetleri
+  - OSNAP adaylari
+  - offset referanslari
+  - drag guide cizgileri
+- panel gorunumleri artik kayit kalinligini fiziksel olarak hissettiriyor
+  - panel gorunum kutusu kayit yuzeyine kadar geliyor
+  - kayitlar artik panelin ustune binen sahte cizgi gibi degil, ayri profil parcasi gibi duruyor
+- mini sablon onizlemeleri de yeni fiziksel layout mantigina gecirildi
+- sag / sol ve ust / alt bolmelerin gorunur araliklari daha profesyonel hale geldi
+- cetvel, cursor olculeri ve guide yerlestirme noktasi `innerRect` mantigina baglandi
+
 ### Editor / CAD
 
 - panel secimi
@@ -267,6 +291,26 @@
 
 ## Son Tamamlanan Buyuk Adim
 
+- cekirdek duzeltme paketi eklendi
+  - `Yeni Proje` artik ornek sablon yuklemiyor; once genislik/yukseklik alan bos kasa modal'i aciliyor
+  - yeni proje tek panel tek satir bos kasa ile basliyor
+  - sag paneldeki sayisal alanlar `Enter/blur` ile commit olan guvenli `NumberField` yapisina gecti
+  - panel genisligi ve satir yuksekligi editleri daha guvenilir hale geldi
+  - cizim altindaki panel olculeri ve saga alinan satir olculeri artik tiklanip dogrudan duzenlenebiliyor
+  - sablon galerisine `+ Sablon Ekle`, `Duzenle`, `Sil` akisi geldi
+  - ozel sablonlar local storage uzerinden korunuyor
+- malzeme ve kalinlik paketi eklendi
+  - yeni `Malzeme Cinsi` alani: `Aldoks`, `C60`, `Isi Yalitimi`, `Surme Sistem`, `Sistem Serisi`
+  - panel engineering motoru artik kasa / kayit kalinligi ve malzeme cinsini net cam ve net kanat hesabina katiyor
+  - kasa kalinligi buyudukce cam alani artik gercekten dusuyor
+  - cam kataloglarina nominal kalinlik / gosterim etiketi eklendi
+  - panel uzerinde uygun boyutta alan varsa cam kalinligi etiketi yaziliyor
+- cizim geometrisi ve profesyonellik paketi eklendi
+  - cizim olcegi artik kasa kalinligini dikkate alarak kuruluyor, bu sayede pencere cercevesi daha dogru ortalaniyor
+  - `profileLayout` gercek kasa/kanat/cam derinliklerine daha yakin hale getirildi
+  - ust ve yan cetveller daha minimalist hale getirildi
+  - crosshair artik daha ince ve imlec merkezinde gorunen nokta ile geliyor
+  - eski kayitli sablon/projeler icin `materialSystem` migration guvencesi eklendi
 - profesyonel `OSNAP + ORTHO + POLAR` paketi eklendi
   - panel, kasa, ic kasa ve guide kesisimleri uzerinde noktaya yapisma calisiyor
   - `copy / move` placement akisi artik osnap ile hedeflenebiliyor
@@ -333,6 +377,18 @@
 - secili kayit icin dogrudan cizim ustu toolbar eklendi
   - dikey kayit: `-50`, `+50`, `50/50`, `33/67`, `67/33`
   - yatay kayit: `-50`, `+50`, `50/50`, `33/67`, `67/33`
+- secili panel / blok / satir icin cizim ustu CAD komut seritleri eklendi
+  - panel komutlari: `SV`, `SH`, `Copy`, `Move`, `Array`
+  - panel uret seridi: `Add L`, `Add R`, `Offset`, `Grid`, `Triple`
+  - blok hizalama seridi: `Align L`, `Align R`, `Center`, `Distribute`, `Match`
+  - blok operasyon seridi: `Trim`, `Extend`, `Copy`, `Move`
+  - satir komutlari: `Align T/B`, `Center Row`, `Distribute Rows`, `Match Height`
+  - satir operasyon seridi: `Copy Row`, `Move`, `Array Row`, `Mirror`, `Offset Row`
+- guide hizalama paketi eklendi
+  - komutlar: `align guide left/right/center/top/bottom/middle`
+  - secili panel / blok icin dikey guide hizalama palette'i
+  - secili satir icin yatay guide hizalama palette'i
+  - command preview artik nearest guide ghost ve guide line gosteriyor
 - teknik pafta profesyonellesti
   - title block icine revizyon / durum / kontrol alani eklendi
   - teknik bilgi panosuna uretim ozeti satirlari eklendi
@@ -341,6 +397,121 @@
 - `npm.cmd run build` temiz geciyor
 
 ## Siradaki En Dogru Buyuk Adimlar
+
+### Nisan 2026 - Fiziksel Preview + Direkt Kayit Olcusu
+
+- `copy / move / array / distribute / grid` preview katmani fiziksel layout mantigina daha yakin hale getirildi
+- preview icinde panel tekrarlarinin arasinda artik kayit boslugu/segment ayrimi gosteriliyor
+- placement preview panel tarafinda blok kopya ve tek panel kopya daha fiziksel ghost ile gosteriliyor
+- placement preview row tarafinda tekrarli satir kopyalari yatay kayit boslugu ile gosteriliyor
+- secili dikey kayit ustunde dogrudan olcu etiketi tiklanip komut editoru acilabiliyor
+- secili yatay kayit ustunde dogrudan olcu etiketi tiklanip satir yuksekligi degistirilebiliyor
+- `npm.cmd run build` temiz geciyor
+
+### Nisan 2026 - Akilli Yerlesim + HUD Input + Teknik Yazi Ciktisi
+
+- `copy / move` placement akisi hedef panel/satir icine sigacak sekilde kaynak olcuyu koruyup gerekirse otomatik fit ediyor
+- placement preview badge'lerinde `Fit` durumu gosteriliyor
+- secili dikey kayit ve yatay kayit icin kanvas ustunde mini `HUD` olcu editoru eklendi
+- HUD input ile panel genisligi ve satir yuksekligi dogrudan `mm` girilerek uygulanabiliyor
+- yeni `src/lib/technicalPrint.ts` ile tam sayfa teknik pafta / uretim ciktisi HTML motoru eklendi
+- ana toolbar'a `Teknik PDF` butonu eklendi
+- Electron tarafina `project:print-technical` kanali eklendi
+- teknik ve BOM yazdir akisi print dialog acacak sekilde guncellendi
+- `npm.cmd run build` temiz geciyor
+
+### Nisan 2026 - Cakisma Analizi + Alternatif Hedef + Detay Levhasi
+
+- placement preview artik hedef panel/satirin gercek kapasitesini `mm` bazinda analiz ediyor
+- `copy / move` sirasinda `Fit %xx` veya `Limit` uyarisi gosteriliyor
+- hedef dar geldiginde preview altinda alternatif panel/satir onerisi cikiyor
+- `offset` preview icinde gecersiz kalan paralel cizgi sayisi raporlaniyor
+- secili dikey/yatay kayit uzerindeyken dogrudan klavyeden sayi yazip HUD input acilabiliyor
+- teknik baski cikti motoru genisletildi:
+  - genel pafta sayfasi
+  - uretim / kesim listesi sayfasi
+  - `D1-D6` referansli detay levhasi
+- `npm.cmd run build` temiz geciyor
+
+### Nisan 2026 - Limitli Preview + Guide Ulasilabilirlik + Detay Risk Kartlari
+
+- `guide-align` preview artik sadece en yakin guide'i gostermiyor; ayni zamanda hedefe ulasilip ulasilamayacagini da analiz ediyor
+- guide komutlarinda `Hazir`, `Max`, `Limit` ve alternatif guide onerisi badge'leri eklendi
+- `trim / extend` preview artik komsu panel/satir payina gore gercek uygulanabilir miktari gosteriyor
+- kenar duzenleme preview'sinda:
+  - tam uygulanabilir durum
+  - kisitli uygulanabilir durum
+  - dis sinir / komsu payi yetersiz durumu
+  ayrisiyor
+- `align` preview artik zaten hizaliysa bunu dogrudan `Hazir` olarak gosteriyor
+- command preview overlay icin yeni durum stilleri eklendi:
+  - `warning`
+  - `error`
+  - `success`
+- teknik baski detay levhasi daha muhendislik odakli hale getirildi:
+  - detay kartlarinda `Uygun / Sinira Yakin / Riskli` durumu
+  - `A-A / B-B / C-C` kesit referans ciplari
+  - kart bazli teknik not
+- `npm.cmd run build` temiz geciyor
+
+### Nisan 2026 - Akilli Tutamac + Auto Slot Ghost + Resmi Pafta Bilgisi
+
+- dikey/yatay kayit surukleme artik tum satiri oransal bozmak yerine komsu panel/satir mantigiyla calisiyor
+- drag sirasinda:
+  - gercek uygulanabilir `mm` miktari
+  - komsu denge bilgisi
+  - `Limit / komsu payi`
+  ipuclari gosteriliyor
+- secili panel genisligi ve satir yuksekligi handle'lari artik daha fiziksel davranis veriyor
+- `copy / move` placement preview'da alternatif hedef sadece metin olarak degil, kanvasta yesil `Auto Slot` ghost olarak da gosteriliyor
+- teknik kanvas title block buyutuldu:
+  - `SAYFA 01`
+  - sistem serisi
+  - revizyon / durum / kontrol bilgisi
+- mini kesit paneli derinlestirildi:
+  - `A-A KESIT`
+  - profil derinligi
+  - cam kalinligi
+  - donanim max agirlik bilgisi
+- print/teknik HTML ciktilarinda sayfa footer'lari eklendi:
+  - `Sayfa 01 / 03`
+  - revizyon / durum
+  - kesit / uretim / detay basligi
+- `npm.cmd run build` temiz geciyor
+
+## Nisan 2026 - Auto Slot Yonlendirme + Trim/Extend Overlay + Derin Kesit
+
+- `copy/move` hedefi dar geldiginde sistem artik en uygun alternatif `Auto Slot`u otomatik uyguluyor
+- secili dikey kayit overlay'ine dogrudan `Trim L / Ext L / Trim R / Ext R` eklendi
+- secili yatay kayit overlay'ine dogrudan `Trim T / Ext T / Trim B / Ext B` eklendi
+- mini teknik kesit karti daha gercek profil mantigina cekildi:
+  - ikinci `B-B CAM` etiketi
+  - ic/dis chamber cizgileri
+  - cita/bead siniri
+  - drenaj ve thermal referans cizgileri
+  - `Olcek 1:2 / Ic-Dis Profil` etiketi
+- bu paket sonrasi hedef:
+  - `trim/extend` icin otomatik guide limit kilidi
+  - seri bazli daha gercek profil geometri kutuphanesi
+  - baski/PDF teknik layout'u daha da resmi hale getirmek
+
+## Nisan 2026 - Guide Kilit + Profil Geometri Kutuphanesi + Resmi Pafta
+
+- `trim/extend` komutlari artik en yakin uygun guide'a otomatik kilitlenebiliyor
+  - hem komut sonucu hem preview katmani guide adini ve kilit durumunu gosteriyor
+- yeni `src/lib/profileGeometryCatalog.ts` eklendi
+  - her seri icin resmi kod
+  - frame/sash chamber cizgileri
+  - thermal band ve drainage slot tanimlari
+  - kesit notu ve referans seti
+- mini teknik kesit karti artik secili seri geometri verisini kullaniyor
+- teknik print paftasi daha resmi hale getirildi
+  - sayfa register bandi
+  - cizim kodu kutusu
+  - onay/revizyon grid'i
+  - SVG paftada title block ve kesit legend blogu
+  - detay kartlarinda seri bazli profil sketch cizgileri
+- `npm.cmd run build` temiz gecti
 
 ### 1. Daha gercek CAD komutlari
 

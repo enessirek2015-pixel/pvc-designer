@@ -1,6 +1,6 @@
 import type { PvcDesign } from "../types/pvc";
 import { buildPanelEngineering, calculatePanelArea } from "./designEngine";
-import { glassCatalog, hardwareCatalog, profileSeriesCatalog } from "./systemCatalog";
+import { glassCatalog, hardwareCatalog, materialSystemCatalog, profileSeriesCatalog } from "./systemCatalog";
 
 export type ManufacturingGroup =
   | "outer-frame"
@@ -36,6 +36,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
   const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
   const glassSpec = glassCatalog[design.materials.glassType];
   const hardwareSpec = hardwareCatalog[design.materials.hardwareQuality];
+  const materialSpec = materialSystemCatalog[design.materials.materialSystem];
   const cutList: CutListItem[] = [];
   let openingPanels = 0;
 
@@ -43,7 +44,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
     id: "outer-top-bottom",
     group: "outer-frame",
     part: "Kasa Ust / Alt",
-    material: profileSpec.label,
+    material: `${materialSpec.label} / ${profileSpec.label}`,
     quantity: 2,
     lengthMm: Math.max(100, design.totalWidth - profileSpec.frameCutLossMm),
     note: `${design.outerFrameThickness} mm kasa net kesim`
@@ -52,7 +53,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
     id: "outer-side-jamb",
     group: "outer-frame",
     part: "Kasa Yan",
-    material: profileSpec.label,
+    material: `${materialSpec.label} / ${profileSpec.label}`,
     quantity: 2,
     lengthMm: Math.max(100, design.totalHeight - profileSpec.frameCutLossMm),
     note: `${design.outerFrameThickness} mm kasa net kesim`
@@ -64,7 +65,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
         id: `transom-${transom.id}`,
         group: "transom",
         part: `Yatay Kayit ${transomIndex + 1}`,
-        material: profileSpec.label,
+        material: `${materialSpec.label} / ${profileSpec.label}`,
         quantity: 1,
         lengthMm: Math.max(100, design.totalWidth - profileSpec.transomCutLossMm),
         note: `${design.mullionThickness} mm yatay kayit net kesim`
@@ -77,14 +78,14 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
           id: `mullion-${transom.id}-${panel.id}`,
           group: "mullion",
           part: `Dikey Kayit ${transomIndex + 1}.${panelIndex + 1}`,
-          material: profileSpec.label,
+          material: `${materialSpec.label} / ${profileSpec.label}`,
           quantity: 1,
           lengthMm: Math.max(100, transom.height - profileSpec.mullionCutLossMm),
           note: `${design.mullionThickness} mm dikey kayit net kesim`
         });
       }
 
-      const engineering = buildPanelEngineering(design, panel.width, transom.height);
+      const engineering = buildPanelEngineering(design, panel.width, transom.height, panel.openingType);
       cutList.push({
         id: `glass-${panel.id}`,
         group: "glass",
@@ -100,7 +101,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
         id: `bead-h-${panel.id}`,
         group: "bead",
         part: `${panel.label} Cita Ust / Alt`,
-        material: profileSpec.label,
+        material: `${materialSpec.label} / ${profileSpec.label}`,
         quantity: 2,
         lengthMm: engineering.approxGlassWidthMm + profileSpec.beadAllowanceMm,
         note: panel.openingType === "fixed" ? "Sabit cam cıtasi" : "Kanat ici cıta"
@@ -109,7 +110,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
         id: `bead-v-${panel.id}`,
         group: "bead",
         part: `${panel.label} Cita Yan`,
-        material: profileSpec.label,
+        material: `${materialSpec.label} / ${profileSpec.label}`,
         quantity: 2,
         lengthMm: engineering.approxGlassHeightMm + profileSpec.beadAllowanceMm,
         note: panel.openingType === "fixed" ? "Sabit cam cıtasi" : "Kanat ici cıta"
@@ -121,7 +122,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
           id: `sash-h-${panel.id}`,
           group: "sash",
           part: `${panel.label} Kanat Ust / Alt`,
-          material: profileSpec.label,
+          material: `${materialSpec.label} / ${profileSpec.label}`,
           quantity: 2,
           lengthMm: engineering.approxSashWidthMm,
           note: `${openingLabel(panel.openingType)} net kesim`
@@ -130,7 +131,7 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
           id: `sash-v-${panel.id}`,
           group: "sash",
           part: `${panel.label} Kanat Yan`,
-          material: profileSpec.label,
+          material: `${materialSpec.label} / ${profileSpec.label}`,
           quantity: 2,
           lengthMm: engineering.approxSashHeightMm,
           note: `${openingLabel(panel.openingType)} net kesim`
@@ -174,6 +175,8 @@ export function buildManufacturingReport(design: PvcDesign): ManufacturingReport
 }
 
 export function buildManufacturingHtml(design: PvcDesign, report: ManufacturingReport) {
+  const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
+  const materialSpec = materialSystemCatalog[design.materials.materialSystem];
   const rows = report.cutList
     .map((item) => {
       const sizeText = item.lengthMm
@@ -211,7 +214,7 @@ export function buildManufacturingHtml(design: PvcDesign, report: ManufacturingR
     </head>
     <body>
       <h1>${design.name}</h1>
-      <div class="meta">${design.customer.customerName || "Musteri tanimsiz"} | ${design.totalWidth} x ${design.totalHeight} mm</div>
+      <div class="meta">${design.customer.customerName || "Musteri tanimsiz"} | ${design.totalWidth} x ${design.totalHeight} mm | ${materialSpec.label} / ${profileSpec.label}</div>
       <div class="stats">
         <div class="chip">Toplam Profil: ${report.profileLengthMeters.toFixed(2)} m</div>
         <div class="chip">Cam Alani: ${report.glassAreaM2.toFixed(2)} m²</div>

@@ -4,6 +4,27 @@ import path from "node:path";
 
 const isDev = !app.isPackaged;
 
+async function openPrintWindow(html: string, title: string) {
+  const printWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    autoHideMenuBar: true,
+    show: false,
+    title
+  });
+
+  await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+
+  await new Promise<void>((resolve) => {
+    printWindow.webContents.print({ silent: false, printBackground: true }, () => {
+      if (!printWindow.isDestroyed()) {
+        printWindow.close();
+      }
+      resolve();
+    });
+  });
+}
+
 function createWindow(): void {
   const rendererPath = isDev
     ? "http://localhost:5173"
@@ -88,11 +109,9 @@ ipcMain.handle("project:open", async () => {
 });
 
 ipcMain.handle("project:print-bom", async (_event, html: string) => {
-  const printWindow = new BrowserWindow({
-    width: 980,
-    height: 760,
-    autoHideMenuBar: true
-  });
+  await openPrintWindow(html, "PVC Designer - BOM");
+});
 
-  await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+ipcMain.handle("project:print-technical", async (_event, html: string) => {
+  await openPrintWindow(html, "PVC Designer - Teknik Pafta");
 });
