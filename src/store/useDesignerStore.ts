@@ -166,11 +166,15 @@ function withHistory(
 
 function normalizePanelWidths(panels: PanelDefinition[], totalWidth: number) {
   const panelCount = panels.length;
-  const baseWidth = Math.floor(totalWidth / panelCount);
-  let remaining = totalWidth;
+  if (panelCount === 0) {
+    return panels;
+  }
+  const safeTotal = Math.max(panelCount * 100, totalWidth);
+  const baseWidth = Math.floor(safeTotal / panelCount);
+  let remaining = safeTotal;
 
   return panels.map((panel, index) => {
-    const nextWidth = index === panelCount - 1 ? remaining : baseWidth;
+    const nextWidth = index === panelCount - 1 ? Math.max(100, remaining) : Math.max(100, baseWidth);
     remaining -= nextWidth;
     return { ...panel, width: nextWidth };
   });

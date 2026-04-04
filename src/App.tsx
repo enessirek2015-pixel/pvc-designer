@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { ToastContainer, useToast } from "./components/Toast";
+import type { FreeDrawFacadePacketItem } from "./components/freeDraw/freeDrawTechnicalPacket";
+import {
+  distanceBetween,
+  type FreeDrawEntity,
+  getHostedOpeningsForWallId,
+  type FreeDrawOpeningEntity,
+  type FreeDrawWallEntity
+} from "./components/freeDraw/freeDrawTools";
+import { useFreeDrawStore } from "./components/freeDraw/useFreeDrawStore";
 import { panelLibraryModules, rowLibraryModules } from "./data/moduleLibrary";
 import { createBlankDesign, designTemplates } from "./data/sampleDesign";
 import {
@@ -9,10 +19,20 @@ import {
   getCanvasRowLayout,
   type CanvasLayout
 } from "./lib/canvasLayout";
+import { getCanvasClientPoint, getCanvasWorldPoint, type CanvasScreenPoint } from "./lib/canvasPointer";
 import { buildDesignHealth, buildDesignSnapshot, buildPanelEngineering } from "./lib/designEngine";
 import { buildManufacturingHtml, buildManufacturingReport } from "./lib/manufacturingEngine";
+import { buildPricingReport, buildQuoteHtml, defaultPricingConfig, type PricingConfig } from "./lib/pricingEngine";
+import { buildDesignSvg, downloadSvg } from "./lib/svgExport";
+import { buildDesignDxf, downloadDxf } from "./lib/dxfExport";
+import {
+  buildCustomerRegistryId,
+  normalizeCustomerRegistry,
+  upsertCustomerRegistryEntry,
+  type CustomerProjectRecord,
+  type CustomerRegistryEntry
+} from "./lib/customerRegistry";
 import { profileGeometryCatalog } from "./lib/profileGeometryCatalog";
-import { buildTechnicalPrintHtml } from "./lib/technicalPrint";
 import type { DesignDiagnostic } from "./lib/designEngine";
 import { buildProfileLayout } from "./lib/profileLayout";
 import { glassCatalog, hardwareCatalog, materialSystemCatalog, profileSeriesCatalog } from "./lib/systemCatalog";
@@ -26,15 +46,21 @@ import type {
   MaterialSystem,
   OpeningType,
   PanelDefinition,
+  DesignProjectLink,
+  DesignRevisionEntry,
   ProfileSeries,
-  PvcDesign
+  PvcDesign,
+  ReferenceGuide
 } from "./types/pvc";
+
+const FreeDrawCanvas = lazy(() => import("./components/freeDraw/FreeDrawCanvas"));
 
 const openingTypeOptions: Array<{ value: OpeningType; label: string; hint: string }> = [
   { value: "fixed", label: "Sabit", hint: "Acilmayan cam panel" },
   { value: "turn-right", label: "Sag Acilim", hint: "Sagdan menteeseli kanat" },
   { value: "turn-left", label: "Sol Acilim", hint: "Soldan menteeseli kanat" },
   { value: "tilt-turn-right", label: "Vasistas + Sag", hint: "Ustten vasistas, saga acilim" },
+  { value: "tilt-turn-left", label: "Vasistas + Sol", hint: "Ustten vasistas, sola acilim" },
   { value: "sliding", label: "Surme", hint: "Yatay kayar kanat" }
 ];
 
@@ -100,7 +126,704 @@ const glassOverlayActions: Array<{ value: GlassType; label: string }> = [
   { value: "frosted", label: "Buzlu" }
 ];
 
+function nextImportedDesignId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function buildProjectLink(
+  patch: Partial<DesignProjectLink> & Pick<DesignProjectLink, "source">
+): DesignProjectLink {
+  return {
+    importedAt: new Date().toISOString(),
+    ...patch
+  };
+}
+
+function nextRevisionId() {
+  return `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function appendRevision(
+  design: PvcDesign,
+  entry: Omit<DesignRevisionEntry, "id" | "createdAt">
+): PvcDesign {
+  const revision: DesignRevisionEntry = {
+    id: nextRevisionId(),
+    createdAt: new Date().toISOString(),
+    ...entry
+  };
+
+  return {
+    ...design,
+    revisionHistory: [revision, ...(design.revisionHistory ?? [])].slice(0, 24)
+  };
+}
+
+function buildFacadeGeometrySignature(design: PvcDesign) {
+  return JSON.stringify({
+    totalWidth: design.totalWidth,
+    totalHeight: design.totalHeight,
+    transoms: design.transoms.map((transom) => ({
+      height: transom.height,
+      panels: transom.panels.map((panel) => ({
+        width: panel.width,
+        openingType: panel.openingType,
+        label: panel.label
+      }))
+    }))
+  });
+}
+
+function formatSignedNumber(value: number, suffix = "") {
+  const rounded = Math.round(value);
+  const prefix = rounded > 0 ? "+" : "";
+  return `${prefix}${rounded}${suffix}`;
+}
+
+function getMaterialScopeLabel(scope: MaterialSyncScope) {
+  switch (scope) {
+    case "frame":
+      return "Renk";
+    case "glass":
+      return "Cam";
+    case "profile":
+      return "Seri";
+    case "system":
+      return "Sistem";
+    case "hardware":
+      return "Donanim";
+    default:
+      return "Tum Malzeme";
+  }
+}
+
+function applyMaterialScopeToDesign(target: PvcDesign, source: PvcDesign, scope: MaterialSyncScope): PvcDesign {
+  const nextMaterials = { ...target.materials };
+
+  if (scope === "all" || scope === "frame") {
+    nextMaterials.frameColor = source.materials.frameColor;
+  }
+  if (scope === "all" || scope === "glass") {
+    nextMaterials.glassType = source.materials.glassType;
+  }
+  if (scope === "all" || scope === "profile") {
+    nextMaterials.profileSeries = source.materials.profileSeries;
+  }
+  if (scope === "all" || scope === "system") {
+    nextMaterials.materialSystem = source.materials.materialSystem;
+  }
+  if (scope === "all" || scope === "hardware") {
+    nextMaterials.hardwareQuality = source.materials.hardwareQuality;
+  }
+
+  return {
+    ...cloneDesignPayload(target),
+    materials: nextMaterials
+  };
+}
+
+function getRecommendedThicknessPair(design: PvcDesign) {
+  const profileSpec = profileSeriesCatalog[design.materials.profileSeries];
+  const systemSpec = materialSystemCatalog[design.materials.materialSystem];
+
+  return {
+    frame: Math.max(profileSpec.recommendedFrameMm, systemSpec.recommendedFrameMm),
+    mullion: Math.max(profileSpec.recommendedMullionMm, systemSpec.recommendedMullionMm)
+  };
+}
+
+function applyProfileThicknessPreset(target: PvcDesign, preset: ProfileThicknessPreset): PvcDesign {
+  const recommended = getRecommendedThicknessPair(target);
+  const delta = preset === "slim" ? -6 : preset === "robust" ? 8 : 0;
+
+  return {
+    ...cloneDesignPayload(target),
+    outerFrameThickness: Math.max(52, recommended.frame + delta),
+    mullionThickness: Math.max(52, recommended.mullion + delta)
+  };
+}
+
+function getOpeningTypeLabel(value: OpeningType) {
+  return openingTypeOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function buildFacadeComparisonRows(current: PvcDesign, source: PvcDesign) {
+  const currentPanels = current.transoms.reduce((sum, transom) => sum + transom.panels.length, 0);
+  const sourcePanels = source.transoms.reduce((sum, transom) => sum + transom.panels.length, 0);
+  const currentOpeningSignature = current.transoms
+    .flatMap((transom) => transom.panels.map((panel) => getOpeningTypeLabel(panel.openingType)))
+    .join(" / ");
+  const sourceOpeningSignature = source.transoms
+    .flatMap((transom) => transom.panels.map((panel) => getOpeningTypeLabel(panel.openingType)))
+    .join(" / ");
+
+  return [
+    {
+      key: "width",
+      label: "Genislik",
+      current: `${current.totalWidth} mm`,
+      source: `${source.totalWidth} mm`,
+      changed: current.totalWidth !== source.totalWidth
+    },
+    {
+      key: "height",
+      label: "Yukseklik",
+      current: `${current.totalHeight} mm`,
+      source: `${source.totalHeight} mm`,
+      changed: current.totalHeight !== source.totalHeight
+    },
+    {
+      key: "rows",
+      label: "Satir",
+      current: `${current.transoms.length}`,
+      source: `${source.transoms.length}`,
+      changed: current.transoms.length !== source.transoms.length
+    },
+    {
+      key: "panels",
+      label: "Panel",
+      current: `${currentPanels}`,
+      source: `${sourcePanels}`,
+      changed: currentPanels !== sourcePanels
+    },
+    {
+      key: "opening-signature",
+      label: "Acilim Dizisi",
+      current: currentOpeningSignature || "Yok",
+      source: sourceOpeningSignature || "Yok",
+      changed: currentOpeningSignature !== sourceOpeningSignature
+    },
+    {
+      key: "frame",
+      label: "Kasa",
+      current: `${current.outerFrameThickness} mm`,
+      source: `${source.outerFrameThickness} mm`,
+      changed: current.outerFrameThickness !== source.outerFrameThickness
+    },
+    {
+      key: "mullion",
+      label: "Kayit",
+      current: `${current.mullionThickness} mm`,
+      source: `${source.mullionThickness} mm`,
+      changed: current.mullionThickness !== source.mullionThickness
+    },
+    {
+      key: "material-system",
+      label: "Sistem",
+      current: materialSystemCatalog[current.materials.materialSystem].label,
+      source: materialSystemCatalog[source.materials.materialSystem].label,
+      changed: current.materials.materialSystem !== source.materials.materialSystem
+    },
+    {
+      key: "profile-series",
+      label: "Profil Serisi",
+      current: profileSeriesCatalog[current.materials.profileSeries].label,
+      source: profileSeriesCatalog[source.materials.profileSeries].label,
+      changed: current.materials.profileSeries !== source.materials.profileSeries
+    },
+    {
+      key: "glass-type",
+      label: "Cam Tipi",
+      current: glassCatalog[current.materials.glassType].label,
+      source: glassCatalog[source.materials.glassType].label,
+      changed: current.materials.glassType !== source.materials.glassType
+    },
+    {
+      key: "hardware",
+      label: "Donanim",
+      current: hardwareCatalog[current.materials.hardwareQuality].label,
+      source: hardwareCatalog[source.materials.hardwareQuality].label,
+      changed: current.materials.hardwareQuality !== source.materials.hardwareQuality
+    }
+  ];
+}
+
+function buildDesignImpactSummary(design: PvcDesign) {
+  const report = buildManufacturingReport(design);
+  const snapshot = buildDesignSnapshot(design);
+  return `Profil ${report.profileLengthMeters.toFixed(2)} m / Cam ${report.glassAreaM2.toFixed(2)} m² / Kanat ${snapshot.openingCount}`;
+}
+
+function buildSynchronizedFacadeDesign(current: PvcDesign, suggested: PvcDesign): PvcDesign {
+  const suggestedProjectLink = suggested.projectLink ?? current.projectLink;
+
+  return cloneDesignPayload({
+    ...suggested,
+    id: current.id,
+    name: current.name,
+    outerFrameThickness: current.outerFrameThickness,
+    mullionThickness: current.mullionThickness,
+    materials: { ...current.materials },
+    customer: {
+      customerName: current.customer.customerName || suggested.customer.customerName,
+      projectCode: current.customer.projectCode || suggested.customer.projectCode,
+      address: current.customer.address || suggested.customer.address,
+      notes: current.customer.notes || suggested.customer.notes
+    },
+    projectLink: suggestedProjectLink
+      ? {
+          ...current.projectLink,
+          ...suggestedProjectLink,
+          source: suggestedProjectLink.source,
+          bundleId: current.projectLink?.bundleId ?? suggestedProjectLink.bundleId,
+          bundleName: current.projectLink?.bundleName ?? suggestedProjectLink.bundleName,
+          importedAt: current.projectLink?.importedAt ?? suggestedProjectLink.importedAt
+        }
+      : current.projectLink,
+    revisionHistory: current.revisionHistory?.map((entry) => ({ ...entry })) ?? []
+  });
+}
+
+function evaluateLinkedFacadeSync(design: PvcDesign, entities: FreeDrawEntity[]) {
+  if (!design.projectLink || design.projectLink.source === "free-draw-opening") {
+    return null;
+  }
+
+  const source = resolveLinkedFacadeSource(entities, design.projectLink);
+  if (!source) {
+    return {
+      status: "missing" as const,
+      wall: null,
+      openings: [],
+      suggestedDesign: null,
+      widthDiff: 0,
+      heightDiff: 0,
+      panelDiff: 0
+    };
+  }
+
+  const suggestedDesign = createDesignFromFreeDrawWallFacade(source.wall, source.openings, design);
+  const widthDiff = suggestedDesign.totalWidth - design.totalWidth;
+  const heightDiff = suggestedDesign.totalHeight - design.totalHeight;
+  const panelDiff =
+    suggestedDesign.transoms.reduce((sum, transom) => sum + transom.panels.length, 0) -
+    design.transoms.reduce((sum, transom) => sum + transom.panels.length, 0);
+  const currentSignature = buildFacadeGeometrySignature(design);
+  const sourceSignature = buildFacadeGeometrySignature(suggestedDesign);
+
+  return {
+    status: currentSignature === sourceSignature ? ("synced" as const) : ("stale" as const),
+    wall: source.wall,
+    openings: source.openings,
+    suggestedDesign,
+    widthDiff,
+    heightDiff,
+    panelDiff
+  };
+}
+
+function mapFreeDrawLeafToOpeningType(
+  leaf: NonNullable<FreeDrawOpeningEntity["leafTypes"]>[number] | undefined,
+  category: FreeDrawOpeningEntity["category"]
+): OpeningType {
+  if (leaf === "slide-left" || leaf === "slide-right" || category === "sliding") {
+    return "sliding";
+  }
+  if (leaf === "left") {
+    return "turn-left";
+  }
+  if (leaf === "right") {
+    return "turn-right";
+  }
+  return "fixed";
+}
+
+function createDesignFromFreeDrawOpening(
+  opening: FreeDrawOpeningEntity,
+  baseDesign: PvcDesign
+): PvcDesign {
+  const spanWidth =
+    opening.hostWallId && opening.hostOrientation === "vertical" ? opening.height : opening.width;
+  const totalWidth = Math.max(600, Math.round(spanWidth));
+  const totalHeight = opening.hostWallId
+    ? opening.category === "door"
+      ? 2200
+      : opening.category === "sliding"
+        ? 2100
+        : opening.topLight
+          ? 1700
+          : 1500
+    : Math.max(600, Math.round(opening.height));
+  const ratioSource =
+    opening.columnRatios?.length === opening.columns
+      ? opening.columnRatios
+      : Array.from({ length: opening.columns }, () => 1);
+  const ratioSum = ratioSource.reduce((sum, value) => sum + value, 0) || opening.columns;
+  let consumedWidth = 0;
+  const leafTypes = opening.leafTypes?.length ? opening.leafTypes : Array.from({ length: opening.columns }, () => "fixed" as const);
+  const panelWidths = ratioSource.map((ratio, index) => {
+    if (index === ratioSource.length - 1) {
+      return Math.max(150, totalWidth - consumedWidth);
+    }
+    const width = Math.max(150, Math.round((totalWidth * ratio) / ratioSum));
+    consumedWidth += width;
+    return width;
+  });
+  const mainPanelDefs: PanelDefinition[] = panelWidths.map((width, index) => ({
+    id: nextImportedDesignId("panel"),
+    width,
+    openingType: mapFreeDrawLeafToOpeningType(leafTypes[index], opening.category),
+    label:
+      leafTypes[index] === "fixed"
+        ? `Sabit ${index + 1}`
+        : leafTypes[index] === "left"
+          ? `Sol ${index + 1}`
+          : leafTypes[index] === "right"
+            ? `Sag ${index + 1}`
+            : `Surme ${index + 1}`
+  }));
+  const materials = {
+    ...baseDesign.materials,
+    materialSystem:
+      opening.category === "sliding" ? "sliding-system" : baseDesign.materials.materialSystem,
+    hardwareQuality:
+      opening.category === "door" ? "premium" : baseDesign.materials.hardwareQuality
+  };
+  const design = createBlankDesign({
+    name:
+      opening.category === "door"
+        ? "Serbest Cizim Kapi"
+        : opening.category === "sliding"
+          ? "Serbest Cizim Surme"
+          : "Serbest Cizim Pencere",
+    totalWidth,
+    totalHeight,
+    outerFrameThickness: opening.frameThickness,
+    mullionThickness: opening.mullionThickness,
+    materials
+  });
+
+  if (opening.topLight) {
+    const topHeight = Math.min(420, Math.max(260, Math.round(totalHeight * 0.22)));
+    design.transoms = [
+      {
+        id: nextImportedDesignId("transom"),
+        height: topHeight,
+        panels: panelWidths.map((width, index) => ({
+          id: nextImportedDesignId("panel"),
+          width,
+          openingType: "fixed",
+          label: `Ust Sabit ${index + 1}`
+        }))
+      },
+      {
+        id: nextImportedDesignId("transom"),
+        height: totalHeight - topHeight,
+        panels: mainPanelDefs
+      }
+    ];
+  } else {
+    design.transoms = [
+      {
+        id: nextImportedDesignId("transom"),
+        height: totalHeight,
+        panels: mainPanelDefs
+      }
+    ];
+  }
+
+  design.projectLink = buildProjectLink({
+    source: "free-draw-opening",
+    roomName: "Serbest Cizim",
+    openingCount: opening.columns,
+    facadeTitle:
+      opening.category === "door"
+        ? "Kapi Taslagi"
+        : opening.category === "sliding"
+          ? "Surme Taslagi"
+          : "Pencere Taslagi"
+  });
+
+  return design;
+}
+
+function buildFacadeProductionGuides(
+  panelSegments: Array<{ width: number; topType: OpeningType; bottomType: OpeningType }>,
+  totalHeight: number,
+  topHeight: number
+): ReferenceGuide[] {
+  const guides: ReferenceGuide[] = [];
+  let cursor = 0;
+  panelSegments.forEach((segment, index) => {
+    if (index < panelSegments.length - 1) {
+      cursor += segment.width;
+      guides.push({
+        id: nextImportedDesignId("guide"),
+        orientation: "vertical",
+        positionMm: cursor,
+        locked: true,
+        label: `Aks ${index + 1}`
+      });
+    }
+  });
+
+  if (topHeight > 0 && topHeight < totalHeight) {
+    guides.push({
+      id: nextImportedDesignId("guide"),
+      orientation: "horizontal",
+      positionMm: topHeight,
+      locked: true,
+      label: "Ust Sabit"
+    });
+  }
+
+  return guides;
+}
+
+function createDesignFromFreeDrawWallFacade(
+  wall: FreeDrawWallEntity,
+  openings: FreeDrawOpeningEntity[],
+  baseDesign: PvcDesign
+): PvcDesign {
+  const horizontal = Math.abs(wall.end.x - wall.start.x) >= Math.abs(wall.end.y - wall.start.y);
+  const wallStart = horizontal ? Math.min(wall.start.x, wall.end.x) : Math.min(wall.start.y, wall.end.y);
+  const wallLength = Math.max(
+    600,
+    Math.round(horizontal ? Math.abs(wall.end.x - wall.start.x) : Math.abs(wall.end.y - wall.start.y))
+  );
+  const sorted = [...openings].sort((left, right) => (horizontal ? left.x - right.x : left.y - right.y));
+  const totalHeight = Math.max(
+    1500,
+    ...sorted.map((opening) =>
+      opening.category === "door" ? 2200 : opening.category === "sliding" ? 2100 : opening.topLight ? 1700 : 1500
+    )
+  );
+  const topHeight = sorted.some((opening) => opening.topLight) ? 320 : 0;
+  const bottomHeight = totalHeight - topHeight;
+  const wallTypeLabel =
+    wall.wallType === "exterior"
+      ? "Dis Duvar"
+      : wall.wallType === "partition"
+        ? "Bolme"
+        : wall.wallType === "curtain"
+          ? "Giydirme"
+          : "Ic Duvar";
+  const materials = {
+    ...baseDesign.materials,
+    materialSystem: sorted.some((opening) => opening.category === "sliding") ? "sliding-system" : baseDesign.materials.materialSystem,
+    hardwareQuality: sorted.some((opening) => opening.category === "door") ? "premium" : baseDesign.materials.hardwareQuality
+  };
+  const design = createBlankDesign({
+    name: wall.roomName?.trim() ? `${wall.roomName.trim()} Cephesi` : "Serbest Cizim Cephe",
+    totalWidth: wallLength,
+    totalHeight,
+    outerFrameThickness:
+      sorted.length > 0
+        ? Math.round(sorted.reduce((sum, item) => sum + item.frameThickness, 0) / sorted.length)
+        : baseDesign.outerFrameThickness,
+    mullionThickness:
+      sorted.length > 0
+        ? Math.round(sorted.reduce((sum, item) => sum + item.mullionThickness, 0) / sorted.length)
+        : baseDesign.mullionThickness,
+    materials
+  });
+
+  const panelSegments: Array<{
+    width: number;
+    bottomType: OpeningType;
+    bottomLabel: string;
+    topType: OpeningType;
+    topLabel: string;
+  }> = [];
+  let cursor = wallStart;
+
+  sorted.forEach((opening) => {
+    const start = horizontal ? opening.x : opening.y;
+    const span = horizontal ? opening.width : opening.height;
+    const gap = Math.max(0, Math.round(start - cursor));
+    if (gap > 0) {
+      panelSegments.push({
+        width: gap,
+        bottomType: "fixed",
+        bottomLabel: "Sabit Pay",
+        topType: "fixed",
+        topLabel: "Ust Sabit"
+      });
+    }
+
+    const ratios =
+      opening.columnRatios?.length === opening.columns
+        ? opening.columnRatios
+        : Array.from({ length: opening.columns }, () => 1);
+    const ratioSum = ratios.reduce((sum, value) => sum + value, 0) || opening.columns;
+    const leafTypes = opening.leafTypes?.length
+      ? opening.leafTypes
+      : Array.from({ length: opening.columns }, () => "fixed" as const);
+    let consumed = 0;
+
+    ratios.forEach((ratio, index) => {
+      const width =
+        index === ratios.length - 1
+          ? Math.max(120, Math.round(span) - consumed)
+          : Math.max(120, Math.round((span * ratio) / ratioSum));
+      consumed += width;
+      panelSegments.push({
+        width,
+        bottomType: mapFreeDrawLeafToOpeningType(leafTypes[index], opening.category),
+        bottomLabel:
+          opening.category === "door"
+            ? `Kapi ${index + 1}`
+            : opening.category === "sliding"
+              ? `Surme ${index + 1}`
+              : leafTypes[index] === "fixed"
+                ? `Sabit ${index + 1}`
+                : leafTypes[index] === "left"
+                  ? `Sol ${index + 1}`
+                  : `Sag ${index + 1}`,
+        topType: "fixed",
+        topLabel: opening.topLight ? `Ust Sabit ${index + 1}` : "Ust Sabit"
+      });
+    });
+
+    cursor = start + span;
+  });
+
+  const tailGap = Math.max(0, Math.round(wallStart + wallLength - cursor));
+  if (tailGap > 0) {
+    panelSegments.push({
+      width: tailGap,
+      bottomType: "fixed",
+      bottomLabel: "Sabit Pay",
+      topType: "fixed",
+      topLabel: "Ust Sabit"
+    });
+  }
+
+  if (topHeight > 0) {
+    design.transoms = [
+      {
+        id: nextImportedDesignId("transom"),
+        height: topHeight,
+        panels: panelSegments.map((segment, index) => ({
+          id: nextImportedDesignId("panel"),
+          width: segment.width,
+          openingType: segment.topType,
+          label: segment.topLabel || `Ust ${index + 1}`
+        }))
+      },
+      {
+        id: nextImportedDesignId("transom"),
+        height: bottomHeight,
+        panels: panelSegments.map((segment, index) => ({
+          id: nextImportedDesignId("panel"),
+          width: segment.width,
+          openingType: segment.bottomType,
+          label: segment.bottomLabel || `Alt ${index + 1}`
+        }))
+      }
+    ];
+  } else {
+    design.transoms = [
+      {
+        id: nextImportedDesignId("transom"),
+        height: totalHeight,
+        panels: panelSegments.map((segment, index) => ({
+          id: nextImportedDesignId("panel"),
+          width: segment.width,
+          openingType: segment.bottomType,
+          label: segment.bottomLabel || `Panel ${index + 1}`
+        }))
+      }
+    ];
+  }
+
+  design.guides = buildFacadeProductionGuides(
+    panelSegments.map((segment) => ({
+      width: segment.width,
+      topType: segment.topType,
+      bottomType: segment.bottomType
+    })),
+    totalHeight,
+    topHeight
+  );
+  design.customer = {
+    ...design.customer,
+    customerName: baseDesign.customer.customerName || "Serbest Cizim",
+    projectCode: `FACADE-${openings.length}`,
+    address: wall.roomName?.trim() || baseDesign.customer.address,
+    notes: `${wallTypeLabel} / ${openings.length} aciklik / Serbest cizimden aktarildi`
+  };
+  design.projectLink = buildProjectLink({
+    source: "free-draw-facade",
+    chainId: wall.chainId,
+    wallId: wall.id,
+    roomName: wall.roomName?.trim() || "",
+    wallType: wall.wallType ?? "interior",
+    facadeTitle: design.name,
+    openingCount: openings.length,
+    segmentLabel: wall.segmentIndex !== undefined ? `S${wall.segmentIndex + 1}` : "Ana"
+  });
+
+  return design;
+}
+
+function resolveLinkedFacadeSource(
+  entities: FreeDrawEntity[],
+  link: DesignProjectLink | undefined
+) {
+  if (!link?.chainId) {
+    return null;
+  }
+
+  const walls = entities
+    .filter((entity): entity is FreeDrawWallEntity => entity.type === "wall" && entity.chainId === link.chainId)
+    .sort((left, right) => (left.segmentIndex ?? 0) - (right.segmentIndex ?? 0));
+
+  if (!walls.length) {
+    return null;
+  }
+
+  let wall =
+    (link.wallId
+      ? walls.find((item) => item.id === link.wallId)
+      : undefined) ??
+    (link.segmentLabel?.startsWith("S")
+      ? walls.find((item) => `S${(item.segmentIndex ?? 0) + 1}` === link.segmentLabel)
+      : undefined) ??
+    walls.find((item) => getHostedOpeningsForWallId(entities, item.id).length > 0) ??
+    walls[0];
+
+  if (!wall) {
+    return null;
+  }
+
+  return {
+    wall,
+    openings: getHostedOpeningsForWallId(entities, wall.id)
+  };
+}
+
 const CUSTOM_TEMPLATE_STORAGE_KEY = "pvc-designer.custom-templates.v2";
+const RECENT_FILES_STORAGE_KEY = "pvc-designer.recent-files.v1";
+const AUTOSAVE_STORAGE_KEY = "pvc-designer.autosave.v1";
+const CUSTOMER_REGISTRY_STORAGE_KEY = "pvc-designer.customer-registry.v1";
+
+type RecentFile = {
+  name: string;
+  path: string;
+  savedAt: string;
+  width: number;
+  height: number;
+};
+
+type AutosavePayload = {
+  savedAt: string;
+  design: PvcDesign;
+};
+
+type FacadeBundleGroup = {
+  bundleId: string;
+  bundleName: string;
+  roomName: string;
+  facadeCount: number;
+  openingCount: number;
+  wallTypes: string[];
+  templates: PvcDesign[];
+};
+
+type MaterialSyncScope = "all" | "frame" | "glass" | "system" | "profile" | "hardware";
+type ProfileThicknessPreset = "recommended" | "slim" | "robust";
+
 type ToolMode =
   | "select"
   | "split-vertical"
@@ -262,6 +985,8 @@ function cloneDesignPayload(design: PvcDesign): PvcDesign {
     ...design,
     materials: { ...design.materials },
     customer: { ...design.customer },
+    projectLink: design.projectLink ? { ...design.projectLink } : undefined,
+    revisionHistory: design.revisionHistory?.map((entry) => ({ ...entry })) ?? [],
     guides: guides.map((guide) => ({ ...guide })),
     transoms: design.transoms.map((transom) => ({
       ...transom,
@@ -271,8 +996,10 @@ function cloneDesignPayload(design: PvcDesign): PvcDesign {
 }
 
 function App() {
+  const freeDrawEntities = useFreeDrawStore((state) => state.entities);
+  const [workspaceMode, setWorkspaceMode] = useState<"designer" | "free-draw">("designer");
   const [viewMode, setViewMode] = useState<"studio" | "technical" | "presentation">("studio");
-  const [railTab, setRailTab] = useState<"inspector" | "materials" | "library" | "bom">("inspector");
+  const [freeDrawFocusChainId, setFreeDrawFocusChainId] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<PvcDesign[]>([]);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [newProjectDraft, setNewProjectDraft] = useState({
@@ -305,6 +1032,12 @@ function App() {
   const [commandHistoryIndex, setCommandHistoryIndex] = useState(-1);
   const [guideLabelDraft, setGuideLabelDraft] = useState("");
   const [interactivePlacement, setInteractivePlacement] = useState<InteractivePlacement>(null);
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem("pvcdesigner-darkmode") === "1"; } catch { return false; }
+  });
+  const [railCollapsed, setRailCollapsed] = useState<Record<string, boolean>>({});
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToast();
   const [visibleLayers, setVisibleLayers] = useState<VisibleLayers>({
     rulers: true,
     dimensions: true,
@@ -315,7 +1048,35 @@ function App() {
     hardware: true,
     notes: true
   });
+  // ── NEW FEATURE STATE ──────────────────────────────────────────────
+  const [pricingConfig, setPricingConfig] = useState<PricingConfig>(() => {
+    try {
+      const raw = localStorage.getItem("pvcdesigner-pricing-config");
+      return raw ? { ...defaultPricingConfig, ...JSON.parse(raw) } : defaultPricingConfig;
+    } catch { return defaultPricingConfig; }
+  });
+  const [designLocked, setDesignLocked] = useState(false);
+  const [panelClipboard, setPanelClipboard] = useState<PanelDefinition | null>(null);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_FILES_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const [customerRegistry, setCustomerRegistry] = useState<CustomerRegistryEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(CUSTOMER_REGISTRY_STORAGE_KEY);
+      return raw ? normalizeCustomerRegistry(JSON.parse(raw) as CustomerRegistryEntry[]) : [];
+    } catch { return []; }
+  });
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [recoverableAutosave, setRecoverableAutosave] = useState<AutosavePayload | null>(null);
+  const [railTab, setRailTab] = useState<"inspector" | "materials" | "library" | "bom" | "pricing">("inspector");
+  const [lastPersistedSignature, setLastPersistedSignature] = useState("");
+  const [selectedCustomerArchiveProjectId, setSelectedCustomerArchiveProjectId] = useState<string | null>(null);
+  // ── END NEW FEATURE STATE ──────────────────────────────────────────
   const panRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const canvasStageRef = useRef<HTMLElement | null>(null);
   const {
     design,
     selected,
@@ -384,6 +1145,90 @@ function App() {
     undo,
     redo
   } = useDesignerStore();
+  const designSignature = useMemo(() => JSON.stringify(cloneDesignPayload(design)), [design]);
+  const hasUnsavedChanges = designSignature !== lastPersistedSignature;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) {
+      root.classList.add("dark-theme");
+    } else {
+      root.classList.remove("dark-theme");
+    }
+    try { localStorage.setItem("pvcdesigner-darkmode", darkMode ? "1" : "0"); } catch { /* ignore */ }
+  }, [darkMode]);
+
+  useEffect(() => {
+    if (!lastPersistedSignature || history.length === 0) {
+      setLastPersistedSignature(designSignature);
+    }
+  }, [designSignature, history.length, lastPersistedSignature]);
+
+  const toggleRailSection = useCallback((key: string) => {
+    setRailCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  // ── AUTOSAVE every 60 s ─────────────────────────────────────────
+  useEffect(() => {
+    const id = setInterval(() => {
+      try {
+        setAutosaveStatus("saving");
+        const payload: AutosavePayload = {
+          savedAt: new Date().toISOString(),
+          design: cloneDesignPayload(design)
+        };
+        localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payload));
+        setRecoverableAutosave(payload);
+        setAutosaveStatus("saved");
+        setTimeout(() => setAutosaveStatus("idle"), 2000);
+      } catch { setAutosaveStatus("idle"); }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [design]);
+
+  // ── PRICING CONFIG persistence ───────────────────────────────────
+  useEffect(() => {
+    try { localStorage.setItem("pvcdesigner-pricing-config", JSON.stringify(pricingConfig)); } catch { /* ignore */ }
+  }, [pricingConfig]);
+
+  // ── RECENT FILES persistence ─────────────────────────────────────
+  useEffect(() => {
+    try { localStorage.setItem(RECENT_FILES_STORAGE_KEY, JSON.stringify(recentFiles)); } catch { /* ignore */ }
+  }, [recentFiles]);
+
+  useEffect(() => {
+    try { localStorage.setItem(CUSTOMER_REGISTRY_STORAGE_KEY, JSON.stringify(customerRegistry)); } catch { /* ignore */ }
+  }, [customerRegistry]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+      if (!raw) {
+        setRecoverableAutosave(null);
+        return;
+      }
+      const parsed = JSON.parse(raw) as AutosavePayload | PvcDesign;
+      if ("design" in parsed) {
+        setRecoverableAutosave(parsed);
+        return;
+      }
+      setRecoverableAutosave({ savedAt: new Date().toISOString(), design: parsed });
+    } catch {
+      setRecoverableAutosave(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return undefined;
+    }
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [hasUnsavedChanges]);
 
   useEffect(() => {
     try {
@@ -428,6 +1273,206 @@ function App() {
       }))
     ],
     [customTemplates]
+  );
+  const facadeBundleGroups = useMemo<FacadeBundleGroup[]>(() => {
+    const groups = new Map<string, FacadeBundleGroup>();
+
+    customTemplates.forEach((template) => {
+      const link = template.projectLink;
+      if (!link?.bundleId) {
+        return;
+      }
+
+      const current =
+        groups.get(link.bundleId) ??
+        {
+          bundleId: link.bundleId,
+          bundleName: link.bundleName ?? "Serbest Cizim Paketi",
+          roomName: link.roomName ?? "Adsiz Oda",
+          facadeCount: 0,
+          openingCount: 0,
+          wallTypes: [],
+          templates: []
+        };
+
+      current.templates.push(template);
+      current.facadeCount += 1;
+      current.openingCount += link.openingCount ?? 0;
+      if (link.wallType && !current.wallTypes.includes(link.wallType)) {
+        current.wallTypes.push(link.wallType);
+      }
+      groups.set(link.bundleId, current);
+    });
+
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        templates: [...group.templates].sort((left, right) => left.name.localeCompare(right.name, "tr"))
+      }))
+      .sort((left, right) => right.bundleName.localeCompare(left.bundleName, "tr"));
+  }, [customTemplates]);
+  const customTemplateSyncMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof evaluateLinkedFacadeSync>>();
+    customTemplates.forEach((template) => {
+      map.set(template.id, evaluateLinkedFacadeSync(template, freeDrawEntities));
+    });
+    return map;
+  }, [customTemplates, freeDrawEntities]);
+  const customTemplateDiffMap = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        comparison: ReturnType<typeof buildFacadeComparisonRows>;
+        changedCount: number;
+        changedFields: string;
+        impact: string;
+      }
+    >();
+    customTemplates.forEach((template) => {
+      const sync = customTemplateSyncMap.get(template.id);
+      if (!sync?.suggestedDesign) {
+        return;
+      }
+      const comparison = buildFacadeComparisonRows(template, sync.suggestedDesign);
+      map.set(template.id, {
+        comparison,
+        changedCount: comparison.filter((row) => row.changed).length,
+        changedFields: comparison
+          .filter((row) => row.changed)
+          .map((row) => row.label)
+          .join(", "),
+        impact: buildDesignImpactSummary(sync.suggestedDesign)
+      });
+    });
+    return map;
+  }, [customTemplateSyncMap, customTemplates]);
+  const linkedFacadeDesigns = useMemo(
+    () =>
+      customTemplates
+        .filter((template) => template.projectLink?.chainId)
+        .map((template) => {
+          const sync = customTemplateSyncMap.get(template.id) ?? null;
+          const diffMeta = customTemplateDiffMap.get(template.id);
+          return {
+            designId: template.id,
+            name: template.name,
+            chainId: template.projectLink?.chainId,
+            bundleId: template.projectLink?.bundleId,
+            bundleName: template.projectLink?.bundleName,
+            roomName: template.projectLink?.roomName,
+            facadeTitle: template.projectLink?.facadeTitle,
+            segmentLabel: template.projectLink?.segmentLabel,
+            openingCount: template.projectLink?.openingCount,
+            wallType: template.projectLink?.wallType,
+            active: template.id === design.id,
+            syncStatus: sync?.status ?? "synced",
+            revisionCount: template.revisionHistory?.length ?? 0,
+            syncDiffCount: diffMeta?.changedCount ?? 0
+          };
+        }),
+    [customTemplateDiffMap, customTemplates, customTemplateSyncMap, design.id]
+  );
+  const currentLinkedBundleTemplates = useMemo(
+    () =>
+      design.projectLink?.bundleId
+        ? customTemplates.filter((template) => template.projectLink?.bundleId === design.projectLink?.bundleId)
+        : [],
+    [customTemplates, design.projectLink?.bundleId]
+  );
+  const currentChainLinkedTemplates = useMemo(
+    () =>
+      design.projectLink?.chainId
+        ? customTemplates.filter((template) => template.projectLink?.chainId === design.projectLink?.chainId)
+        : [],
+    [customTemplates, design.projectLink?.chainId]
+  );
+  const linkedFacadeSync = useMemo(() => evaluateLinkedFacadeSync(design, freeDrawEntities), [design, freeDrawEntities]);
+  const currentBundleSyncItems = useMemo(
+    () =>
+      currentLinkedBundleTemplates.map((template) => ({
+        template,
+        sync: customTemplateSyncMap.get(template.id) ?? null,
+        diffMeta: customTemplateDiffMap.get(template.id) ?? null
+      })),
+    [currentLinkedBundleTemplates, customTemplateDiffMap, customTemplateSyncMap]
+  );
+  const currentBundleSyncSummary = useMemo(
+    () =>
+      currentBundleSyncItems.reduce(
+        (summary, item) => {
+          if (item.sync?.status === "stale") {
+            summary.stale += 1;
+          } else if (item.sync?.status === "missing") {
+            summary.missing += 1;
+          } else if (item.sync?.status === "synced") {
+            summary.synced += 1;
+          }
+          return summary;
+        },
+        { stale: 0, missing: 0, synced: 0 }
+      ),
+    [currentBundleSyncItems]
+  );
+  const linkedFacadeComparison = useMemo(() => {
+    if (!linkedFacadeSync?.suggestedDesign) {
+      return [];
+    }
+    return buildFacadeComparisonRows(design, linkedFacadeSync.suggestedDesign);
+  }, [design, linkedFacadeSync]);
+  const currentBundleDiffRows = useMemo(
+    () =>
+      currentBundleSyncItems
+        .filter((item) => item.sync?.status === "stale" && item.sync.suggestedDesign && item.diffMeta)
+        .map((item) => {
+          return {
+            template: item.template,
+            sourceDesign: item.sync!.suggestedDesign!,
+            comparison: item.diffMeta!.comparison,
+            changedCount: item.diffMeta!.changedCount,
+            changedFields: item.diffMeta!.changedFields,
+            impact: item.diffMeta!.impact
+          };
+        }),
+    [currentBundleSyncItems]
+  );
+  const bundleSyncStateMap = useMemo(() => {
+    const map = new Map<string, { stale: number; missing: number; synced: number }>();
+
+    customTemplates.forEach((template) => {
+      const bundleId = template.projectLink?.bundleId;
+      if (!bundleId) {
+        return;
+      }
+
+      const current = map.get(bundleId) ?? { stale: 0, missing: 0, synced: 0 };
+      const sync = customTemplateSyncMap.get(template.id) ?? null;
+      if (sync?.status === "stale") {
+        current.stale += 1;
+      } else if (sync?.status === "missing") {
+        current.missing += 1;
+      } else if (sync?.status === "synced") {
+        current.synced += 1;
+      }
+      map.set(bundleId, current);
+    });
+
+    return map;
+  }, [customTemplateSyncMap, customTemplates]);
+  const recentRevisionHistory = useMemo(() => (design.revisionHistory ?? []).slice(0, 4), [design.revisionHistory]);
+  const bundleRevisionFeed = useMemo(
+    () =>
+      currentLinkedBundleTemplates
+        .flatMap((template) =>
+          (template.revisionHistory ?? []).map((entry) => ({
+            ...entry,
+            designId: template.id,
+            designName: template.name,
+            segmentLabel: template.projectLink?.segmentLabel ?? "Cephe"
+          }))
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 6),
+    [currentLinkedBundleTemplates]
   );
 
   const selectedPanel = useMemo(() => {
@@ -717,6 +1762,88 @@ function App() {
   const openingCount = designSnapshot.openingCount;
   const fixedCount = designSnapshot.fixedCount;
   const bom = useMemo(() => buildManufacturingReport(design), [design]);
+  const pricingReport = useMemo(() => buildPricingReport(design, bom, pricingConfig), [design, bom, pricingConfig]);
+  const currentCustomerRegistryId = useMemo(
+    () => buildCustomerRegistryId(design.customer.customerName || design.name, design.customer.address || ""),
+    [design.customer.address, design.customer.customerName, design.name]
+  );
+  const currentCustomerEntry = useMemo(
+    () => customerRegistry.find((entry) => entry.id === currentCustomerRegistryId) ?? null,
+    [currentCustomerRegistryId, customerRegistry]
+  );
+  const currentCustomerProjects = useMemo(
+    () => [...(currentCustomerEntry?.projects ?? [])].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    [currentCustomerEntry]
+  );
+  const currentCustomerQuotes = useMemo(
+    () =>
+      currentCustomerProjects
+        .flatMap((project) =>
+          (project.quoteHistory ?? []).map((quote) => ({
+            ...quote,
+            projectName: project.name,
+            width: project.width,
+            height: project.height
+          }))
+        )
+        .sort((left, right) => right.quotedAt.localeCompare(left.quotedAt)),
+    [currentCustomerProjects]
+  );
+  const currentCustomerQuoteBreakdown = useMemo(() => {
+    const grouped = new Map<string, number>();
+    currentCustomerQuotes.forEach((quote) => {
+      grouped.set(quote.currencySymbol, (grouped.get(quote.currencySymbol) ?? 0) + quote.total);
+    });
+
+    return [...grouped.entries()]
+      .map(([currencySymbol, total]) => ({ currencySymbol, total }))
+      .sort((left, right) => right.total - left.total);
+  }, [currentCustomerQuotes]);
+  const currentCustomerQuoteTrend = useMemo(() => {
+    const max = currentCustomerQuotes.reduce((highest, quote) => Math.max(highest, quote.total), 0);
+    return currentCustomerQuotes.slice(0, 6).reverse().map((quote) => ({
+      ...quote,
+      widthPercent: max > 0 ? Math.max(14, Math.round((quote.total / max) * 100)) : 0
+    }));
+  }, [currentCustomerQuotes]);
+  const selectedCustomerArchiveProject = useMemo(() => {
+    if (!currentCustomerProjects.length) {
+      return null;
+    }
+
+    return (
+      currentCustomerProjects.find((project) => project.id === selectedCustomerArchiveProjectId) ??
+      currentCustomerProjects[0]
+    );
+  }, [currentCustomerProjects, selectedCustomerArchiveProjectId]);
+  const selectedCustomerArchiveComparison = useMemo(() => {
+    if (!selectedCustomerArchiveProject?.snapshot) {
+      return [];
+    }
+    return buildFacadeComparisonRows(design, selectedCustomerArchiveProject.snapshot);
+  }, [design, selectedCustomerArchiveProject]);
+  const recoverableAutosaveDiffers = useMemo(() => {
+    if (!recoverableAutosave) {
+      return false;
+    }
+    return JSON.stringify(cloneDesignPayload(recoverableAutosave.design)) !== designSignature;
+  }, [designSignature, recoverableAutosave]);
+
+  useEffect(() => {
+    if (!currentCustomerProjects.length) {
+      if (selectedCustomerArchiveProjectId) {
+        setSelectedCustomerArchiveProjectId(null);
+      }
+      return;
+    }
+
+    if (
+      !selectedCustomerArchiveProjectId ||
+      !currentCustomerProjects.some((project) => project.id === selectedCustomerArchiveProjectId)
+    ) {
+      setSelectedCustomerArchiveProjectId(currentCustomerProjects[0].id);
+    }
+  }, [currentCustomerProjects, selectedCustomerArchiveProjectId]);
 
   useEffect(() => {
     if (!selectedPanel || commandTarget) {
@@ -797,9 +1924,22 @@ function App() {
       return undefined;
     }
 
+    // Toast ile göster
+    const isError = commandStatus.toLowerCase().includes("hata") ||
+      commandStatus.toLowerCase().includes("alinamiy") ||
+      commandStatus.toLowerCase().includes("siniri") ||
+      commandStatus.toLowerCase().includes("gecersiz");
+    const isSuccess = commandStatus.toLowerCase().includes("kopyalandi") ||
+      commandStatus.toLowerCase().includes("tasindi") ||
+      commandStatus.toLowerCase().includes("uygulandi") ||
+      commandStatus.toLowerCase().includes("kaydediliyor") ||
+      commandStatus.toLowerCase().includes("sigdirildi");
+    const kind = isError ? "error" : isSuccess ? "success" : "info";
+    pushToast(commandStatus, kind);
+
     const timer = window.setTimeout(() => setCommandStatus(null), 3600);
     return () => window.clearTimeout(timer);
-  }, [commandStatus]);
+  }, [commandStatus, pushToast]);
 
   function rememberCommand(source: string) {
     const normalized = source.trim();
@@ -2417,6 +3557,10 @@ function App() {
   }
 
   useEffect(() => {
+    if (workspaceMode !== "designer") {
+      return undefined;
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isTypingSurface =
@@ -2429,9 +3573,42 @@ function App() {
         event.preventDefault();
         undo();
       }
-      if (event.ctrlKey && event.key.toLowerCase() === "y") {
+      if (event.ctrlKey && (event.key.toLowerCase() === "y" || (event.shiftKey && event.key.toLowerCase() === "z"))) {
         event.preventDefault();
         redo();
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        handleSaveProject();
+        setCommandStatus("Proje kaydediliyor...");
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "o" && !isTypingSurface) {
+        event.preventDefault();
+        handleOpenProject();
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "n" && !isTypingSurface) {
+        event.preventDefault();
+        handleOpenNewProjectDialog();
+      }
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        handleZoomToFit();
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "c" && !isTypingSurface) {
+        event.preventDefault();
+        handleCopySelectedPanel();
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "v" && !isTypingSurface) {
+        event.preventDefault();
+        if (!designLocked) handlePastePanel();
+      }
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        handleToggleDesignLock();
+      }
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        handleExportSvg();
       }
       if (event.ctrlKey && event.key === "0") {
         event.preventDefault();
@@ -2474,10 +3651,15 @@ function App() {
         return;
       }
       if (!event.ctrlKey && !event.altKey) {
+        if (event.key === "?" || event.key === "/") {
+          event.preventDefault();
+          setShowShortcutHelp((current) => !current);
+        }
         if (event.key === "Escape") {
           setCommandValue("");
           setCommandQuery("");
           setInteractivePlacement(null);
+          setShowShortcutHelp(false);
         }
         if (
           interactivePlacement &&
@@ -2585,18 +3767,141 @@ function App() {
     polarAngle,
     transomShiftRange,
     updatePlacementLock,
-    undo
+    undo,
+    workspaceMode
   ]);
+
+  function handleZoomToFit() {
+    const container = canvasStageRef.current;
+    if (!container) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight - 120;
+    const drawingWidth = 900;
+    const margin = 120;
+    const svgWidth = drawingWidth + margin * 2;
+    const scalePerMm = drawingWidth / (design.totalWidth + design.outerFrameThickness * 2);
+    const outerH = (design.totalHeight + design.outerFrameThickness * 2) * scalePerMm;
+    const svgHeight = outerH + 300;
+    const nextZoom = Math.max(0.2, Math.min(2.5, Math.min(containerW / svgWidth, containerH / svgHeight) * 0.9));
+    const nextPanX = (containerW - svgWidth * nextZoom) / 2;
+    const nextPanY = Math.max(20, (containerH - svgHeight * nextZoom) / 2);
+    setZoom(Number(nextZoom.toFixed(2)));
+    setPan({ x: nextPanX, y: nextPanY });
+    setCommandStatus(`Ekrana sigdirildi — Zoom %${Math.round(nextZoom * 100)}`);
+  }
+
+  function rememberRecentFile(entry: RecentFile) {
+    setRecentFiles((prev) => [entry, ...prev.filter((file) => file.path !== entry.path)].slice(0, 8));
+  }
+
+  function rememberCustomerFromDesign(
+    targetDesign: PvcDesign,
+    options?: { projectPath?: string; quoteTotal?: number; quoteCurrencySymbol?: string }
+  ) {
+    setCustomerRegistry((current) => upsertCustomerRegistryEntry(current, targetDesign, options));
+  }
+
+  function applyCustomerRegistryEntry(entry: CustomerRegistryEntry) {
+    setCustomerField("customerName", entry.customerName);
+    setCustomerField("address", entry.address);
+    setCustomerField("notes", entry.notes);
+    if (entry.projectCode) {
+      setCustomerField("projectCode", entry.projectCode);
+    }
+    setCommandStatus(`${entry.customerName} bilgileri projeye uygulandi`);
+  }
+
+  function handleLoadArchivedProject(project: CustomerProjectRecord, entry: CustomerRegistryEntry) {
+    if (!project.snapshot) {
+      pushToast("Arsivde bu proje icin cizim snapshot'i bulunamadi", "warning");
+      return;
+    }
+
+    const archived = cloneDesignPayload(project.snapshot);
+    replaceDesign(archived, project.projectPath);
+    setLastPersistedSignature(JSON.stringify(cloneDesignPayload(archived)));
+    setWorkspaceMode("designer");
+    setViewMode("studio");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    applyCustomerRegistryEntry(entry);
+    if (project.projectPath) {
+      rememberRecentFile({
+        name: project.name,
+        path: project.projectPath,
+        savedAt: project.updatedAt,
+        width: project.width,
+        height: project.height
+      });
+    }
+    setCommandStatus(`${entry.customerName} arsivinden ${project.name} yuklendi`);
+    pushToast(`Arsiv projesi yuklendi: ${project.name}`, "success");
+  }
+
+  function handleStartArchiveRevision(project: CustomerProjectRecord, entry: CustomerRegistryEntry) {
+    if (!project.snapshot) {
+      pushToast("Revizyon baslatmak icin arsiv snapshot'i bulunamadi", "warning");
+      return;
+    }
+
+    const base = cloneDesignPayload(project.snapshot);
+    const revisionDesign = appendRevision(
+      {
+        ...base,
+        id: nextImportedDesignId("revision"),
+        name: `${project.name} Revizyon`,
+        customer: {
+          ...base.customer,
+          customerName: entry.customerName || base.customer.customerName,
+          address: entry.address || base.customer.address,
+          notes: entry.notes || base.customer.notes,
+          projectCode: base.customer.projectCode || entry.projectCode
+        }
+      },
+      {
+        source: "manual",
+        label: "Arsiv Revizyonu",
+        detail: `${project.name} arsiv kaydindan yeni revizyon acildi`
+      }
+    );
+
+    replaceDesign(revisionDesign);
+    setLastPersistedSignature(JSON.stringify(cloneDesignPayload(revisionDesign)));
+    setWorkspaceMode("designer");
+    setViewMode("studio");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setCommandStatus(`${project.name} icin yeni revizyon taslagi olusturuldu`);
+    pushToast(`Arsivden revizyon acildi: ${revisionDesign.name}`, "success");
+  }
 
   async function handleSaveProject() {
     if (!window.desktopApi) {
       return;
     }
 
-    await window.desktopApi.saveProject({
+    const result = await window.desktopApi.saveProject({
       suggestedName: design.name.replace(/\s+/g, "-").toLowerCase(),
       content: design
     });
+
+    if (!result.canceled && result.path) {
+      const entry: RecentFile = {
+        name: design.name,
+        path: result.path,
+        savedAt: new Date().toISOString(),
+        width: design.totalWidth,
+        height: design.totalHeight
+      };
+      rememberRecentFile(entry);
+      rememberCustomerFromDesign(design, { projectPath: result.path });
+      setLastPersistedSignature(designSignature);
+      pushToast(`Kaydedildi: ${design.name}`, "success");
+    }
   }
 
   async function handleOpenProject() {
@@ -2607,6 +3912,47 @@ function App() {
     const result = await window.desktopApi.openProject();
     if (!result.canceled && result.content) {
       replaceDesign(result.content, result.path);
+      setLastPersistedSignature(JSON.stringify(cloneDesignPayload(result.content)));
+      if (result.path) {
+        const entry: RecentFile = {
+          name: result.content.name,
+          path: result.path,
+          savedAt: new Date().toISOString(),
+          width: result.content.totalWidth,
+          height: result.content.totalHeight
+        };
+        rememberRecentFile(entry);
+      }
+      rememberCustomerFromDesign(result.content, { projectPath: result.path });
+    }
+  }
+
+  async function handleOpenProjectPath(path: string) {
+    if (!window.desktopApi?.openProjectPath) {
+      handleOpenProject();
+      return;
+    }
+
+    const result = await window.desktopApi.openProjectPath(path);
+    if (!result.canceled && result.content) {
+      replaceDesign(result.content, result.path);
+      setLastPersistedSignature(JSON.stringify(cloneDesignPayload(result.content)));
+      if (result.path) {
+        rememberRecentFile({
+          name: result.content.name,
+          path: result.path,
+          savedAt: new Date().toISOString(),
+          width: result.content.totalWidth,
+          height: result.content.totalHeight
+        });
+      }
+      rememberCustomerFromDesign(result.content, { projectPath: result.path });
+      pushToast(`Dosya acildi: ${result.content.name}`, "success");
+      return;
+    }
+
+    if ("error" in result && result.error) {
+      pushToast(result.error, "error");
     }
   }
 
@@ -2644,9 +3990,306 @@ function App() {
     setCommandStatus(`Bos proje ${width} x ${height} mm olarak olusturuldu`);
   }
 
+  function handleImportFreeDrawOpening(opening: FreeDrawOpeningEntity) {
+    const nextDesign = appendRevision(
+      createDesignFromFreeDrawOpening(opening, design),
+      {
+        source: "import",
+        label: "Serbest cizimden aciklik aktarildi",
+        detail: `${opening.category} / ${opening.columns} bolme / ${Math.round(opening.width)} x ${Math.round(opening.height)} mm`
+      }
+    );
+    replaceDesign(nextDesign);
+    setWorkspaceMode("designer");
+    setFreeDrawFocusChainId(null);
+    setViewMode("studio");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setSelectedObject({ type: "outer-frame" });
+    setMultiSelection([]);
+    setCommandTarget(null);
+    setCommandQuery("");
+    setCommandValue("");
+    setRailTab("inspector");
+    setCommandStatus(
+      `${opening.category === "door" ? "Kapi" : opening.category === "sliding" ? "Surme" : "Pencere"} taslagi PVC Designer'a aktarildi`
+    );
+  }
+
+  function handleImportFreeDrawWallFacade(wall: FreeDrawWallEntity, openings: FreeDrawOpeningEntity[]) {
+    const nextDesign = appendRevision(
+      createDesignFromFreeDrawWallFacade(wall, openings, design),
+      {
+        source: "import",
+        label: "Serbest cizim cephesi aktarildi",
+        detail: `${wall.roomName?.trim() || "Adsiz Cephe"} / ${openings.length} aciklik / ${Math.round(distanceBetween(wall.start, wall.end))} mm`
+      }
+    );
+    replaceDesign(nextDesign);
+    setWorkspaceMode("designer");
+    setFreeDrawFocusChainId(null);
+    setViewMode("technical");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setSelectedObject({ type: "outer-frame" });
+    setMultiSelection([]);
+    setCommandTarget(null);
+    setCommandQuery("");
+    setCommandValue("");
+    setRailTab("bom");
+    setCommandStatus(`Duvar cephesi ${openings.length} aciklik ile teknik uretim gorunusune aktarildi`);
+  }
+
+  function handleImportFreeDrawFacadeBundle(bundle: FreeDrawFacadePacketItem[]) {
+    if (!bundle.length) {
+      return;
+    }
+
+    const stamp = Date.now();
+    const primaryRoomName =
+      bundle[0]?.wall.roomName?.trim() ||
+      bundle.find((item) => item.wall.roomName?.trim())?.wall.roomName?.trim() ||
+      "Serbest Cizim";
+    const bundleId = `free-draw-bundle-${stamp}`;
+    const bundleName = `${primaryRoomName} Cephe Seti`;
+    const importedDesigns = bundle.map((item, index) => {
+      const nextDesign = appendRevision(
+        createDesignFromFreeDrawWallFacade(item.wall, item.openings, design),
+        {
+          source: "import",
+          label: "Toplu cephe aktarimi",
+          detail: `${item.title} / ${item.openings.length} aciklik`
+        }
+      );
+      nextDesign.id = `facade-template-${stamp}-${index}`;
+      nextDesign.name = item.title;
+      nextDesign.projectLink = {
+        ...(nextDesign.projectLink ?? buildProjectLink({ source: "free-draw-facade-bundle" })),
+        source: "free-draw-facade-bundle",
+        bundleId,
+        bundleName,
+        chainId: item.wall.chainId,
+        roomName: item.wall.roomName?.trim() || primaryRoomName,
+        wallType: item.wall.wallType ?? "interior",
+        facadeTitle: item.title,
+        segmentLabel: item.wall.segmentIndex !== undefined ? `S${item.wall.segmentIndex + 1}` : "Ana",
+        openingCount: item.openings.length,
+        importedAt: new Date(stamp).toISOString()
+      };
+      nextDesign.customer = {
+        ...nextDesign.customer,
+        projectCode: `${bundleName.replace(/\s+/g, "-").toUpperCase()}-${index + 1}`,
+        notes: `${nextDesign.customer.notes} / Teknik paket toplu aktarim / ${bundleName}`
+      };
+      return cloneDesignPayload(nextDesign);
+    });
+
+    setCustomTemplates((current) => [...importedDesigns, ...current]);
+
+    replaceDesign(cloneDesignPayload(importedDesigns[0]));
+    setWorkspaceMode("designer");
+    setFreeDrawFocusChainId(null);
+    setViewMode("technical");
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setSelectedObject({ type: "outer-frame" });
+    setMultiSelection([]);
+    setCommandTarget(null);
+    setCommandQuery("");
+    setCommandValue("");
+    setRailTab("library");
+    setCommandStatus(`${bundleName}: ${importedDesigns.length} cephe teknik galeriye ve aktif projeye aktarildi`);
+  }
+
+  function handleJumpToFreeDrawSource(template: PvcDesign = design) {
+    const chainId = template.projectLink?.chainId ?? null;
+    setWorkspaceMode("free-draw");
+    setFreeDrawFocusChainId(chainId);
+    setCommandStatus(
+      chainId
+        ? `${template.name} kaynagi serbest cizimde secildi`
+        : `${template.name} icin serbest cizim kaynagi acildi`
+    );
+  }
+
+  function handleSyncCurrentDesignFromSource() {
+    if (!design.projectLink || !linkedFacadeSync || linkedFacadeSync.status !== "stale" || !linkedFacadeSync.suggestedDesign) {
+      return;
+    }
+    const nextDesign = appendRevision(buildSynchronizedFacadeDesign(design, linkedFacadeSync.suggestedDesign), {
+      source: "sync",
+      label: "Kaynak plan ile senkronlandi",
+      detail: `Genislik ${formatSignedNumber(linkedFacadeSync.widthDiff, " mm")} / Yukseklik ${formatSignedNumber(linkedFacadeSync.heightDiff, " mm")} / Panel ${formatSignedNumber(linkedFacadeSync.panelDiff)} / ${buildDesignImpactSummary(linkedFacadeSync.suggestedDesign)}`
+    });
+
+    replaceDesign(nextDesign, activeProjectPath);
+    setCustomTemplates((current) =>
+      current.map((template) => (template.id === nextDesign.id ? cloneDesignPayload(nextDesign) : template))
+    );
+    setViewMode("technical");
+    setCommandStatus("Aktif cephe serbest cizim kaynagi ile senkronlandi");
+  }
+
+  function handleApplyLinkedBundleMaterialScope(scope: MaterialSyncScope) {
+    if (!design.projectLink?.bundleId) {
+      return;
+    }
+
+    const scopeLabel = getMaterialScopeLabel(scope);
+    const bundleId = design.projectLink.bundleId;
+    const bundleName = design.projectLink.bundleName ?? design.projectLink.roomName ?? "Bagli Set";
+    const nextTemplates = customTemplates.map((template) => {
+      if (template.projectLink?.bundleId !== bundleId) {
+        return template;
+      }
+
+      const scopedDesign = applyMaterialScopeToDesign(template, design, scope);
+
+      return cloneDesignPayload(
+        appendRevision(scopedDesign, {
+          source: "bulk-material",
+          label: "Set geneli malzeme guncellendi",
+          detail: `${bundleName} / ${scopeLabel} / ${buildDesignImpactSummary(scopedDesign)}`
+        })
+      );
+    });
+    const updatedCount = nextTemplates.filter((template) => template.projectLink?.bundleId === bundleId).length;
+    setCustomTemplates(nextTemplates);
+
+    const nextActiveScoped = applyMaterialScopeToDesign(design, design, scope);
+    const nextActive = appendRevision(nextActiveScoped, {
+      source: "bulk-material",
+      label: "Set geneli malzeme guncellendi",
+      detail: `${bundleName} / ${scopeLabel} / ${buildDesignImpactSummary(nextActiveScoped)}`
+    });
+    replaceDesign(nextActive, activeProjectPath);
+    setCommandStatus(`${scopeLabel} ${Math.max(updatedCount, 1)} bagli cepheye uygulandi`);
+  }
+
+  function handleSyncBundleFacadeById(templateId: string) {
+    const target = customTemplates.find((template) => template.id === templateId);
+    if (!target) {
+      return;
+    }
+
+    const sync = evaluateLinkedFacadeSync(target, freeDrawEntities);
+    if (!sync || sync.status !== "stale" || !sync.suggestedDesign) {
+      return;
+    }
+
+    const nextTemplate = appendRevision(buildSynchronizedFacadeDesign(target, sync.suggestedDesign), {
+      source: "sync",
+      label: "Kaynak plan ile senkronlandi",
+      detail: `Genislik ${formatSignedNumber(sync.widthDiff, " mm")} / Yukseklik ${formatSignedNumber(sync.heightDiff, " mm")} / Panel ${formatSignedNumber(sync.panelDiff)} / ${buildDesignImpactSummary(sync.suggestedDesign)}`
+    });
+
+    setCustomTemplates((current) =>
+      current.map((template) => (template.id === templateId ? cloneDesignPayload(nextTemplate) : template))
+    );
+
+    if (design.id === templateId) {
+      replaceDesign(nextTemplate, activeProjectPath);
+      setViewMode("technical");
+    }
+
+    setCommandStatus(`${nextTemplate.name} kaynak plan ile senkronlandi`);
+  }
+
+  function handleSyncCurrentBundleFromSource() {
+    if (!design.projectLink?.bundleId) {
+      return;
+    }
+
+    const bundleId = design.projectLink.bundleId;
+    let syncedCount = 0;
+    let missingCount = 0;
+    let nextActive = design;
+
+    const nextTemplates = customTemplates.map((template) => {
+      if (template.projectLink?.bundleId !== bundleId) {
+        return template;
+      }
+
+      const sync = evaluateLinkedFacadeSync(template, freeDrawEntities);
+      if (sync?.status === "missing") {
+        missingCount += 1;
+        return template;
+      }
+      if (!sync || sync.status !== "stale" || !sync.suggestedDesign) {
+        return template;
+      }
+
+      syncedCount += 1;
+      const nextTemplate = appendRevision(buildSynchronizedFacadeDesign(template, sync.suggestedDesign), {
+        source: "sync",
+        label: "Set bazli kaynak senkronu",
+        detail: `${template.projectLink?.segmentLabel ?? template.name} / ${formatSignedNumber(sync.widthDiff, " mm")} / ${formatSignedNumber(sync.heightDiff, " mm")} / Panel ${formatSignedNumber(sync.panelDiff)} / ${buildDesignImpactSummary(sync.suggestedDesign)}`
+      });
+      if (template.id === design.id) {
+        nextActive = nextTemplate;
+      }
+      return cloneDesignPayload(nextTemplate);
+    });
+
+    setCustomTemplates(nextTemplates);
+    if (nextActive !== design) {
+      replaceDesign(nextActive, activeProjectPath);
+      setViewMode("technical");
+    }
+    setCommandStatus(
+      syncedCount > 0
+        ? `${syncedCount} cephe plan kaynagi ile senkronlandi${missingCount ? ` / ${missingCount} kaynak eksik` : ""}`
+        : missingCount > 0
+          ? `${missingCount} cephe icin kaynak eksik`
+          : "Bagli sette senkron gerektiren cephe bulunmadi"
+    );
+  }
+
+  function handleApplyLinkedBundleThicknessPreset(preset: ProfileThicknessPreset) {
+    if (!design.projectLink?.bundleId) {
+      return;
+    }
+
+    const bundleId = design.projectLink.bundleId;
+    const presetLabel = preset === "recommended" ? "Onerilen" : preset === "slim" ? "Ince" : "Guclu";
+    const nextTemplates = customTemplates.map((template) => {
+      if (template.projectLink?.bundleId !== bundleId) {
+        return template;
+      }
+
+      const presetDesign = applyProfileThicknessPreset(template, preset);
+
+      return cloneDesignPayload(
+        appendRevision(presetDesign, {
+          source: "bulk-material",
+          label: "Set geneli profil preset uygulandi",
+          detail: `${presetLabel} profil / ${template.materials.profileSeries} / ${buildDesignImpactSummary(presetDesign)}`
+        })
+      );
+    });
+
+    setCustomTemplates(nextTemplates);
+    const nextActivePreset = applyProfileThicknessPreset(design, preset);
+    const nextActive = appendRevision(nextActivePreset, {
+      source: "bulk-material",
+      label: "Set geneli profil preset uygulandi",
+      detail: `${presetLabel} profil / ${design.materials.profileSeries} / ${buildDesignImpactSummary(nextActivePreset)}`
+    });
+    replaceDesign(nextActive, activeProjectPath);
+    setCommandStatus(`${presetLabel} profil kalinligi bagli setin tamamina uygulandi`);
+  }
+
+  function handleLoadLinkedFacadeById(designId: string) {
+    const target = customTemplates.find((template) => template.id === designId);
+    if (!target) {
+      return;
+    }
+    handleLoadGalleryTemplate(target);
+  }
+
   function handleLoadGalleryTemplate(template: PvcDesign) {
     replaceDesign(cloneDesignPayload(template));
-    setViewMode("studio");
+    setViewMode(template.projectLink?.source?.startsWith("free-draw-facade") ? "technical" : "studio");
     setZoom(1);
     setPan({ x: 0, y: 0 });
     setSelectedObject(null);
@@ -2713,6 +4356,7 @@ function App() {
   }
 
   async function handlePrintTechnical() {
+    const { buildTechnicalPrintHtml } = await import("./lib/technicalPrint");
     const html = buildTechnicalPrintHtml(design);
     if (window.desktopApi?.printTechnical) {
       await window.desktopApi.printTechnical(html);
@@ -2730,15 +4374,194 @@ function App() {
     printWindow.print();
   }
 
+  async function handlePrintBundleRevisionPacket() {
+    if (!design.projectLink?.bundleId || !currentLinkedBundleTemplates.length) {
+      return;
+    }
+
+    const { buildBundleRevisionPacketHtml } = await import("./lib/revisionPacket");
+    const html = buildBundleRevisionPacketHtml({
+      bundleName: design.projectLink.bundleName ?? design.projectLink.roomName ?? "Bagli Set",
+      roomName: design.projectLink.roomName ?? "Adsiz Oda",
+      templates: currentLinkedBundleTemplates,
+      diffRows: currentBundleDiffRows,
+      revisions: bundleRevisionFeed
+    });
+
+    if (window.desktopApi?.printTechnical) {
+      await window.desktopApi.printTechnical(html);
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=1440,height=940");
+    if (!printWindow) {
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  }
+
+  // ── NEW FEATURE HANDLERS ─────────────────────────────────────────
+  function handleExportSvg() {
+    const svgScale = 0.4;
+    const outerRect = { x: 40, y: 40, width: design.totalWidth * svgScale, height: design.totalHeight * svgScale };
+    const layout = buildCanvasLayout(design, outerRect, svgScale);
+    const svg = buildDesignSvg(design, layout, svgScale);
+    downloadSvg(svg, `${design.name.replace(/\s+/g, "-")}.svg`);
+    pushToast("SVG dışa aktarıldı", "success");
+  }
+
+  function handleExportDxf() {
+    const layout = buildCanvasLayout(design, { x: 0, y: 0, width: design.totalWidth, height: design.totalHeight }, 1);
+    const dxf = buildDesignDxf(design, layout);
+    downloadDxf(dxf, `${design.name.replace(/\s+/g, "-")}.dxf`);
+    setCommandStatus("Teknik DXF katmanli olarak disa aktarıldi");
+    pushToast("DXF disa aktarildi", "success");
+  }
+
+  async function handlePrintQuote() {
+    const report = buildManufacturingReport(design);
+    const pricing = buildPricingReport(design, report, pricingConfig);
+    const previewScale = 0.32;
+    const previewLayout = buildCanvasLayout(
+      design,
+      { x: 40, y: 40, width: design.totalWidth * previewScale, height: design.totalHeight * previewScale },
+      previewScale
+    );
+    const previewSvg = buildDesignSvg(design, previewLayout, previewScale).replace(/<\?xml[\s\S]*?\?>\s*/u, "");
+    const html = buildQuoteHtml(design, report, pricing, pricingConfig, { previewSvg });
+    if (window.desktopApi?.printBom) {
+      await window.desktopApi.printBom(html);
+    } else {
+      const w = window.open("", "_blank", "width=1100,height=820");
+      if (!w) return;
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+      w.print();
+    }
+    rememberCustomerFromDesign(design, {
+      quoteTotal: pricing.grandTotal,
+      quoteCurrencySymbol: pricing.currencySymbol
+    });
+  }
+
+  function handleCopySelectedPanel() {
+    if (!selected) return;
+    const transom = design.transoms.find((t) => t.id === selected.transomId);
+    const panel = transom?.panels.find((p) => p.id === selected.panelId);
+    if (panel) {
+      setPanelClipboard({ ...panel });
+      pushToast(`Panel kopyalandı: ${panel.label}`, "info");
+    }
+  }
+
+  function handlePastePanel() {
+    if (!panelClipboard || !selected) {
+      pushToast("Yapıştırılacak panel yok", "warning");
+      return;
+    }
+    insertPanelAdjacent("right");
+    pushToast("Panel yapıştırıldı", "success");
+  }
+
+  function handleToggleDesignLock() {
+    setDesignLocked((prev) => {
+      const next = !prev;
+      pushToast(next ? "Tasarım kilitlendi 🔒" : "Tasarım kilidi açıldı 🔓", next ? "warning" : "info");
+      return next;
+    });
+  }
+
+  function handleAutosaveRestore() {
+    try {
+      const raw = localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+      if (!raw) { pushToast("Otomatik kayıt bulunamadı", "warning"); return; }
+      const parsed = JSON.parse(raw) as AutosavePayload | PvcDesign;
+      const saved = "design" in parsed ? parsed.design : parsed;
+      replaceDesign(saved);
+      setLastPersistedSignature(JSON.stringify(cloneDesignPayload(saved)));
+      pushToast("Otomatik kayıt geri yüklendi", "success");
+    } catch { pushToast("Otomatik kayıt okunamadı", "error"); }
+  }
+  // ── END NEW FEATURE HANDLERS ─────────────────────────────────────
+
   return (
     <div className={`studio-shell ${viewMode === "presentation" ? "presentation-mode" : ""}`}>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      {showShortcutHelp && (
+        <div className="shortcut-help-overlay" onClick={() => setShowShortcutHelp(false)}>
+          <div className="shortcut-help-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="shortcut-help-header">
+              <h2>Klavye Kisayollari</h2>
+              <button className="shortcut-help-close" onClick={() => setShowShortcutHelp(false)}>✕</button>
+            </div>
+            <div className="shortcut-help-grid">
+              <div className="shortcut-group">
+                <h3>Genel</h3>
+                <div className="shortcut-row"><kbd>Ctrl+S</kbd><span>Projeyi kaydet</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+O</kbd><span>Proje ac</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+N</kbd><span>Yeni proje</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+Z</kbd><span>Geri al (Undo)</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+Y</kbd><span>Yeniden yap (Redo)</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+Shift+Z</kbd><span>Yeniden yap (Redo)</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+Shift+F</kbd><span>Tasarimi ekrana sigdir</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+0</kbd><span>Gorunumu sifirla (%100)</span></div>
+                <div className="shortcut-row"><kbd>Ctrl++</kbd><span>Yakinlastir</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+-</kbd><span>Uzaklastir</span></div>
+                <div className="shortcut-row"><kbd>Esc</kbd><span>Komutu / Sectimi iptal et</span></div>
+                <div className="shortcut-row"><kbd>?</kbd><span>Bu yardim panelini ac/kapat</span></div>
+              </div>
+              <div className="shortcut-group">
+                <h3>Mod Tuslari</h3>
+                <div className="shortcut-row"><kbd>F3</kbd><span>OSNAP ac/kapat</span></div>
+                <div className="shortcut-row"><kbd>F8</kbd><span>ORTHO ac/kapat</span></div>
+                <div className="shortcut-row"><kbd>F10</kbd><span>POLAR ac/kapat</span></div>
+                <div className="shortcut-row"><kbd>Space</kbd><span>Kaydirma modu (tut+surukle)</span></div>
+              </div>
+              <div className="shortcut-group">
+                <h3>Tasarim Editoru</h3>
+                <div className="shortcut-row"><kbd>split</kbd><span>Secili paneli dikine bol</span></div>
+                <div className="shortcut-row"><kbd>row</kbd><span>Secili satiri yataya bol</span></div>
+                <div className="shortcut-row"><kbd>del</kbd><span>Secili paneli sil</span></div>
+                <div className="shortcut-row"><kbd>eq</kbd><span>Satir panellerini esitle</span></div>
+                <div className="shortcut-row"><kbd>mirror</kbd><span>Aynala</span></div>
+                <div className="shortcut-row"><kbd>array N</kbd><span>N kez carp</span></div>
+                <div className="shortcut-row"><kbd>copy</kbd><span>Kopyala</span></div>
+                <div className="shortcut-row"><kbd>move</kbd><span>Tasi</span></div>
+              </div>
+              <div className="shortcut-group">
+                <h3>Serbest Cizim</h3>
+                <div className="shortcut-row"><kbd>Ctrl+Z</kbd><span>Geri al</span></div>
+                <div className="shortcut-row"><kbd>Ctrl+Shift+Z</kbd><span>Yeniden yap</span></div>
+                <div className="shortcut-row"><kbd>Delete</kbd><span>Secili nesneyi sil</span></div>
+                <div className="shortcut-row"><kbd>Enter</kbd><span>Cizimi tamamla</span></div>
+                <div className="shortcut-row"><kbd>Esc</kbd><span>Cizimi iptal et</span></div>
+                <div className="shortcut-row"><kbd>F8</kbd><span>ORTHO ac/kapat</span></div>
+              </div>
+            </div>
+            <p className="shortcut-help-footer">Herhangi bir yere tiklayarak veya Esc ile kapatabilirsiniz.</p>
+          </div>
+        </div>
+      )}
       <aside className="left-rail">
         <div className="brand-block">
           <div className="brand-mark">PD</div>
-          <div>
+          <div style={{ flex: 1 }}>
             <p className="eyebrow bright">PVC Designer</p>
             <h1>Tasarim Studyosu</h1>
           </div>
+          <button
+            className="dark-mode-btn"
+            onClick={() => setDarkMode((d) => !d)}
+            title={darkMode ? "Acik temaya gec" : "Karanlik temaya gec"}
+          >
+            <span className="dm-icon">{darkMode ? "☀" : "🌙"}</span>
+          </button>
         </div>
 
         <div className="mission-card">
@@ -2748,116 +4571,543 @@ function App() {
           </p>
         </div>
 
-        <section className="rail-section">
-          <h2>Proje Ayarlari</h2>
-          <div className="stack-fields">
-            <label>
-              Proje Adi
-              <input
-                type="text"
-                value={design.name}
-                onChange={(event) => setDesignName(event.target.value)}
-              />
-            </label>
-            <NumberField label="Genislik (mm)" value={design.totalWidth} onChange={setTotalWidth} />
-            <NumberField label="Yukseklik (mm)" value={design.totalHeight} onChange={setTotalHeight} />
-            <NumberField
-              label="Kasa Kalinligi"
-              value={design.outerFrameThickness}
-              onChange={setOuterFrameThickness}
-            />
-            <NumberField
-              label="Kayit Kalinligi"
-              value={design.mullionThickness}
-              onChange={setMullionThickness}
-            />
+        <section className="rail-section compact">
+          <h2>Calisma Modu</h2>
+          <div className="option-pills mode-pills">
+            <button
+              className={`pill-button ${workspaceMode === "designer" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("designer")}
+            >
+              PVC Designer
+            </button>
+            <button
+              className={`pill-button ${workspaceMode === "free-draw" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("free-draw")}
+            >
+              Serbest Cizim
+            </button>
           </div>
         </section>
 
-        <section className="rail-section compact">
-          <h2>Hizli Duzenleme</h2>
-          <div className="dual-action-grid">
-            <ActionTile
-              title="Dikey Bol"
-              subtitle="Secili paneli ikiye ayir"
-              onClick={splitSelectedPanelVertical}
-            />
-            <ActionTile
-              title="Yatay Bol"
-              subtitle="Secili satiri ayir"
-              onClick={splitSelectedTransomHorizontal}
-            />
-          </div>
-          <div className="history-badges">
-            <span className="canvas-chip">Undo {history.length}</span>
-            <span className="canvas-chip">Redo {future.length}</span>
-          </div>
-        </section>
-
-        <section className="rail-section compact">
-          <h2>CAD Araclari</h2>
-          <div className="tool-grid">
-            {[
-              ["select", "Sec"],
-              ["split-vertical", "Dikey"],
-              ["split-horizontal", "Yatay"],
-              ["add-left", "Sol +"],
-              ["add-right", "Sag +"],
-              ["add-top", "Ust +"],
-              ["add-bottom", "Alt +"],
-              ["guide-vertical", "V Guide"],
-              ["guide-horizontal", "H Guide"],
-              ["delete-panel", "Sil"]
-            ].map(([value, label]) => (
-              <button
-                key={value}
-                className={`tool-chip ${toolMode === value ? "active" : ""}`}
-                onClick={() => setToolMode(value as ToolMode)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="snap-row">
-            <span className="canvas-chip">Snap</span>
-            {[1, 5, 10, 50].map((value) => (
-              <button
-                key={value}
-                className={`snap-chip ${snapMm === value ? "active" : ""}`}
-                onClick={() => setSnapMm(value)}
-              >
-                {value} mm
-              </button>
-            ))}
-          </div>
-          <div className="cad-ops">
-            <button className="tool-chip" onClick={equalizeSelectedRowPanels}>Satiri Esitle</button>
-            <button className="tool-chip" onClick={equalizeAllTransomHeights}>Satirlari Esitle</button>
-            {multiSelection.length > 1 && (
-              <>
-                <button className="tool-chip" onClick={() => equalizePanelsByRefs(multiSelection)}>Secili Genislikleri Esitle</button>
-                <button className="tool-chip" onClick={() => equalizeTransomsByRefs(multiSelection)}>Secili Satirlari Dengele</button>
-              </>
+        {workspaceMode === "designer" ? (
+          <>
+            {recentFiles.length > 0 && (
+              <section className="rail-section compact">
+                <div className="rail-section-header" onClick={() => toggleRailSection("recent")}>
+                  <h2>Son Açılanlar</h2>
+                  <span className={`rail-section-toggle ${railCollapsed["recent"] ? "collapsed" : ""}`}>▼</span>
+                </div>
+                <div className={`rail-section-body ${railCollapsed["recent"] ? "collapsed" : ""}`}>
+                  <div className="recent-files-list">
+                    {recentFiles.slice(0, 5).map((file) => (
+                      <button
+                        key={file.path}
+                        className="recent-file-item"
+                        onClick={() => handleOpenProjectPath(file.path)}
+                        title={file.path}
+                      >
+                        <div className="recent-file-icon">📄</div>
+                        <div className="recent-file-info">
+                          <strong>{file.name}</strong>
+                          <span>{file.width} × {file.height} mm</span>
+                        </div>
+                        <span className="recent-file-time">
+                          {new Date(file.savedAt).toLocaleDateString("tr-TR")}
+                        </span>
+                      </button>
+                    ))}
+                    {recentFiles.length > 0 && (
+                      <button className="recent-file-clear" onClick={() => setRecentFiles([])}>
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </section>
             )}
-          </div>
-        </section>
+            {customerRegistry.length > 0 && (
+              <section className="rail-section compact">
+                <div className="rail-section-header" onClick={() => toggleRailSection("customer-center")}>
+                  <h2>Musteri Proje Merkezi</h2>
+                  <span className={`rail-section-toggle ${railCollapsed["customer-center"] ? "collapsed" : ""}`}>▼</span>
+                </div>
+                <div className={`rail-section-body ${railCollapsed["customer-center"] ? "collapsed" : ""}`}>
+                  <div className="customer-center-list">
+                    {customerRegistry.slice(0, 4).map((entry) => {
+                      const lastProject = entry.projects[0];
+                      return (
+                        <article
+                          key={entry.id}
+                          className={`customer-center-card ${entry.id === currentCustomerRegistryId ? "active" : ""}`}
+                        >
+                          <div className="customer-center-head">
+                            <strong>{entry.customerName}</strong>
+                            <span>{entry.projects.length} proje</span>
+                          </div>
+                          <div className="customer-center-meta">
+                            <span>{entry.projectCode || "Kod yok"}</span>
+                            <span>{entry.quoteCount} teklif</span>
+                            <span>{new Date(entry.lastWorkedAt).toLocaleDateString("tr-TR")}</span>
+                          </div>
+                          {typeof entry.lastQuoteTotal === "number" && (
+                            <div className="customer-center-quote">
+                              <span>Son teklif</span>
+                              <strong>
+                                {entry.lastQuoteCurrencySymbol ?? pricingReport.currencySymbol}{" "}
+                                {entry.lastQuoteTotal.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
+                              </strong>
+                            </div>
+                          )}
+                          <div className="customer-center-actions">
+                            <button className="hero-button ghost compact" onClick={() => applyCustomerRegistryEntry(entry)}>
+                              Musteriye Gec
+                            </button>
+                            {lastProject?.snapshot && (
+                              <button
+                                className="hero-button ghost compact"
+                                onClick={() => handleLoadArchivedProject(lastProject, entry)}
+                              >
+                                Son Proje
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            )}
+            <section className="rail-section">
+              <div className="rail-section-header" onClick={() => toggleRailSection("project")}>
+                <h2>Proje Ayarlari</h2>
+                <span className={`rail-section-toggle ${railCollapsed["project"] ? "collapsed" : ""}`}>▼</span>
+              </div>
+              <div className={`rail-section-body ${railCollapsed["project"] ? "collapsed" : ""}`}>
+              <div className="stack-fields">
+                <label>
+                  Proje Adi
+                  <input
+                    type="text"
+                    value={design.name}
+                    onChange={(event) => setDesignName(event.target.value)}
+                  />
+                </label>
+                <NumberField label="Genislik (mm)" value={design.totalWidth} onChange={setTotalWidth} />
+                <NumberField label="Yukseklik (mm)" value={design.totalHeight} onChange={setTotalHeight} />
+                <NumberField
+                  label="Kasa Kalinligi"
+                  value={design.outerFrameThickness}
+                  onChange={setOuterFrameThickness}
+                />
+                <NumberField
+                  label="Kayit Kalinligi"
+                  value={design.mullionThickness}
+                  onChange={setMullionThickness}
+                />
+              </div>
+              </div>
+            </section>
 
-        <section className="rail-section compact">
-          <h2>Panel Tipleri</h2>
-          <div className="option-pills">
-            {openingTypeOptions.map((option) => (
-              <button
-                key={option.value}
-                className={`pill-button ${
-                  selectedPanel?.panel.openingType === option.value ? "active" : ""
-                }`}
-                onClick={() => selectedPanel && setSelectedOpeningType(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </section>
+            {design.projectLink && (
+              <section className="rail-section compact source-link-card">
+                <h2>Kaynak Baglantisi</h2>
+                <div className="source-link-summary">
+                  <strong>{design.projectLink.bundleName ?? design.projectLink.facadeTitle ?? design.name}</strong>
+                  <span>
+                    {design.projectLink.roomName || "Adsiz Kaynak"} /{" "}
+                    {design.projectLink.wallType === "exterior"
+                      ? "Dis Duvar"
+                      : design.projectLink.wallType === "partition"
+                        ? "Bolme"
+                        : design.projectLink.wallType === "curtain"
+                          ? "Giydirme"
+                          : "Ic Duvar"}
+                  </span>
+                  <span>
+                    {design.projectLink.segmentLabel ?? "Ana"} / {design.projectLink.openingCount ?? 0} aciklik /{" "}
+                    {design.projectLink.source}
+                  </span>
+                </div>
+                {linkedFacadeSync && (
+                  <div className="source-link-sync-grid">
+                    <div className={`source-link-status ${linkedFacadeSync.status}`}>
+                      <strong>
+                        {linkedFacadeSync.status === "synced"
+                          ? "Kaynak Senkron"
+                          : linkedFacadeSync.status === "missing"
+                            ? "Kaynak Eksik"
+                            : "Plan Degisti"}
+                      </strong>
+                      <span>
+                        {linkedFacadeSync.status === "synced"
+                          ? "Aktif cephe plan kaynagi ile uyumlu."
+                          : linkedFacadeSync.status === "missing"
+                            ? "Kaynak duvar bulunamadi. Zincir veya segment degismis olabilir."
+                            : `${linkedFacadeSync.openings.length} aciklik / ${Math.round(linkedFacadeSync.wall ? distanceBetween(linkedFacadeSync.wall.start, linkedFacadeSync.wall.end) : 0)} mm kaynak`}
+                      </span>
+                    </div>
+                    {linkedFacadeSync.status === "stale" && (
+                      <div className="source-link-diff-list">
+                        <span>Genislik {formatSignedNumber(linkedFacadeSync.widthDiff, " mm")}</span>
+                        <span>Yukseklik {formatSignedNumber(linkedFacadeSync.heightDiff, " mm")}</span>
+                        <span>Panel {formatSignedNumber(linkedFacadeSync.panelDiff)}</span>
+                      </div>
+                    )}
+                    <div className="source-link-action-grid">
+                      {linkedFacadeSync.status === "stale" && (
+                        <button className="hero-button compact" onClick={handleSyncCurrentDesignFromSource}>
+                          Kaynakla Senkronla
+                        </button>
+                      )}
+                      {design.projectLink.bundleId && (
+                        <>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("all")}>
+                            Tum Sete Hepsi
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("profile")}>
+                            Tum Sete Seri
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("glass")}>
+                            Tum Sete Cam
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("system")}>
+                            Tum Sete Sistem
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("hardware")}>
+                            Tum Sete Donanim
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleMaterialScope("frame")}>
+                            Tum Sete Renk
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {design.projectLink.bundleId && (
+                      <div className="source-link-bundle-card">
+                        <div className="source-link-bundle-head">
+                          <strong>Set Senkronu</strong>
+                          <span>
+                            {currentBundleSyncSummary.synced} senkron / {currentBundleSyncSummary.stale} degisen /{" "}
+                            {currentBundleSyncSummary.missing} eksik
+                          </span>
+                        </div>
+                        <div className="source-link-diff-list">
+                          <span>{currentLinkedBundleTemplates.length} bagli cephe</span>
+                          <span>{bundleRevisionFeed.length} son revizyon</span>
+                        </div>
+                        <div className="source-link-action-grid triple">
+                          <button className="hero-button compact" onClick={handleSyncCurrentBundleFromSource}>
+                            Seti Senkronla
+                          </button>
+                          <button className="hero-button ghost compact" onClick={handlePrintBundleRevisionPacket}>
+                            Revizyon Paketi
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleThicknessPreset("recommended")}>
+                            Onerilen Profil
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleThicknessPreset("slim")}>
+                            Ince Profil
+                          </button>
+                          <button className="hero-button ghost compact" onClick={() => handleApplyLinkedBundleThicknessPreset("robust")}>
+                            Guclu Profil
+                          </button>
+                        </div>
+                        {currentBundleSyncItems.length > 0 && (
+                          <div className="source-link-bundle-list">
+                            {currentBundleSyncItems.slice(0, 6).map((item) => (
+                              <div key={`bundle-sync-${item.template.id}`} className="source-link-bundle-item">
+                                <div>
+                                  <strong>{item.template.projectLink?.segmentLabel ?? item.template.name}</strong>
+                                  <span>{item.template.name}</span>
+                                  {item.diffMeta?.changedCount ? <span>{item.diffMeta.changedCount} fark / {item.diffMeta.changedFields}</span> : null}
+                                </div>
+                                <div className="source-link-bundle-item-actions">
+                                  <span className={`project-bundle-state-chip ${item.sync?.status ?? "synced"}`}>
+                                    {item.sync?.status === "stale"
+                                      ? "Degisti"
+                                      : item.sync?.status === "missing"
+                                        ? "Eksik"
+                                        : "Senkron"}
+                                  </span>
+                                  {item.sync?.status === "stale" && (
+                                    <button
+                                      className="hero-button ghost compact"
+                                      onClick={() => handleSyncBundleFacadeById(item.template.id)}
+                                    >
+                                      Esle
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {linkedFacadeComparison.length > 0 && (
+                      <div className="source-link-compare-card">
+                        <div className="source-link-bundle-head">
+                          <strong>Revizyon Karsilastirma</strong>
+                          <span>{linkedFacadeComparison.filter((item) => item.changed).length} fark</span>
+                        </div>
+                        <div className="source-link-compare-table">
+                          <div className="source-link-compare-head">
+                            <span>Alan</span>
+                            <span>Aktif</span>
+                            <span>Kaynak</span>
+                          </div>
+                          {linkedFacadeComparison.map((item) => (
+                            <div
+                              key={`compare-${item.key}`}
+                              className={`source-link-compare-row ${item.changed ? "changed" : ""}`}
+                            >
+                              <strong>{item.label}</strong>
+                              <span>{item.current}</span>
+                              <em>{item.source}</em>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {currentBundleDiffRows.length > 0 && (
+                      <div className="source-link-compare-card">
+                        <div className="source-link-bundle-head">
+                          <strong>Set Fark Ekrani</strong>
+                          <span>{currentBundleDiffRows.length} cephe farkli</span>
+                        </div>
+                        <div className="source-link-bundle-list">
+                          {currentBundleDiffRows.map((item) => (
+                            <div key={`bundle-diff-${item.template.id}`} className="source-link-bundle-item wide">
+                              <div>
+                                <strong>
+                                  {item.template.projectLink?.segmentLabel ?? "Cephe"} / {item.template.name}
+                                </strong>
+                                <span>{item.changedCount} alan farkli</span>
+                                <span>{item.changedFields}</span>
+                                <span>{item.impact}</span>
+                                <div className="source-link-preview-pair">
+                                  <div className="source-link-preview-card">
+                                    <p>Aktif</p>
+                                    <MiniTemplatePreview design={item.template} />
+                                  </div>
+                                  <div className="source-link-preview-card">
+                                    <p>Kaynak</p>
+                                    <MiniTemplatePreview design={item.sourceDesign} />
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="source-link-bundle-item-actions">
+                                <button
+                                  className="hero-button ghost compact"
+                                  onClick={() => handleLoadLinkedFacadeById(item.template.id)}
+                                >
+                                  Ac
+                                </button>
+                                <button
+                                  className="hero-button compact"
+                                  onClick={() => handleSyncBundleFacadeById(item.template.id)}
+                                >
+                                  Senkronla
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="source-link-actions">
+                  <button className="hero-button ghost compact" onClick={() => handleJumpToFreeDrawSource()}>
+                    Plana Git
+                  </button>
+                  {currentLinkedBundleTemplates.length > 0 && (
+                    <div className="metric-badge">{currentLinkedBundleTemplates.length} bagli cephe</div>
+                  )}
+                </div>
+                {currentChainLinkedTemplates.length > 0 && (
+                  <div className="source-link-mini-list">
+                    {currentChainLinkedTemplates.map((template) => (
+                      <button
+                        key={`source-linked-${template.id}`}
+                        className={`source-link-mini-item ${template.id === design.id ? "active" : ""}`}
+                        onClick={() => handleLoadGalleryTemplate(template)}
+                      >
+                        <span>{template.projectLink?.segmentLabel ?? "Cephe"}</span>
+                        <strong>{template.name}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {recentRevisionHistory.length > 0 && (
+                  <div className="source-link-revisions">
+                    <div className="source-link-revisions-head">
+                      <strong>Revizyon Akisi</strong>
+                      <span>Son {recentRevisionHistory.length}</span>
+                    </div>
+                    {recentRevisionHistory.map((entry) => (
+                      <div key={entry.id} className="source-link-revision">
+                        <div className="source-link-revision-meta">
+                          <strong>{entry.label}</strong>
+                          <span>{new Date(entry.createdAt).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}</span>
+                        </div>
+                        <span>{entry.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {bundleRevisionFeed.length > 0 && (
+                  <div className="source-link-revisions">
+                    <div className="source-link-revisions-head">
+                      <strong>Set Revizyon Panosu</strong>
+                      <span>{bundleRevisionFeed.length} kayit</span>
+                    </div>
+                    {bundleRevisionFeed.map((entry) => (
+                      <button
+                        key={`bundle-revision-${entry.id}-${entry.designId}`}
+                        className={`source-link-revision interactive ${entry.designId === design.id ? "active" : ""}`}
+                        onClick={() => handleLoadLinkedFacadeById(entry.designId)}
+                      >
+                        <div className="source-link-revision-meta">
+                          <strong>
+                            {entry.segmentLabel} / {entry.designName}
+                          </strong>
+                          <span>{new Date(entry.createdAt).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}</span>
+                        </div>
+                        <span>{entry.label}</span>
+                        <span>{entry.detail}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            <section className="rail-section compact">
+              <div className="rail-section-header" onClick={() => toggleRailSection("quickedit")}>
+                <h2>Hizli Duzenleme</h2>
+                <span className={`rail-section-toggle ${railCollapsed["quickedit"] ? "collapsed" : ""}`}>▼</span>
+              </div>
+              <div className={`rail-section-body ${railCollapsed["quickedit"] ? "collapsed" : ""}`}>
+              <div className="dual-action-grid">
+                <ActionTile
+                  title="Dikey Bol"
+                  subtitle="Secili paneli ikiye ayir"
+                  onClick={splitSelectedPanelVertical}
+                />
+                <ActionTile
+                  title="Yatay Bol"
+                  subtitle="Secili satiri ayir"
+                  onClick={splitSelectedTransomHorizontal}
+                />
+              </div>
+              <div className="history-badges">
+                <span className="canvas-chip">Undo {history.length}</span>
+                <span className="canvas-chip">Redo {future.length}</span>
+              </div>
+              </div>
+            </section>
+
+            <section className="rail-section compact">
+              <div className="rail-section-header" onClick={() => toggleRailSection("cadtools")}>
+                <h2>CAD Araclari</h2>
+                <span className={`rail-section-toggle ${railCollapsed["cadtools"] ? "collapsed" : ""}`}>▼</span>
+              </div>
+              <div className={`rail-section-body ${railCollapsed["cadtools"] ? "collapsed" : ""}`}>
+              <div className="tool-grid">
+                {[
+                  ["select", "Sec"],
+                  ["split-vertical", "Dikey"],
+                  ["split-horizontal", "Yatay"],
+                  ["add-left", "Sol +"],
+                  ["add-right", "Sag +"],
+                  ["add-top", "Ust +"],
+                  ["add-bottom", "Alt +"],
+                  ["guide-vertical", "V Guide"],
+                  ["guide-horizontal", "H Guide"],
+                  ["delete-panel", "Sil"]
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    className={`tool-chip ${toolMode === value ? "active" : ""}`}
+                    onClick={() => setToolMode(value as ToolMode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="snap-row">
+                <span className="canvas-chip">Snap</span>
+                {[1, 5, 10, 50].map((value) => (
+                  <button
+                    key={value}
+                    className={`snap-chip ${snapMm === value ? "active" : ""}`}
+                    onClick={() => setSnapMm(value)}
+                  >
+                    {value} mm
+                  </button>
+                ))}
+              </div>
+              <div className="cad-ops">
+                <button className="tool-chip" onClick={equalizeSelectedRowPanels}>Satiri Esitle</button>
+                <button className="tool-chip" onClick={equalizeAllTransomHeights}>Satirlari Esitle</button>
+                {multiSelection.length > 1 && (
+                  <>
+                    <button className="tool-chip" onClick={() => equalizePanelsByRefs(multiSelection)}>Secili Genislikleri Esitle</button>
+                    <button className="tool-chip" onClick={() => equalizeTransomsByRefs(multiSelection)}>Secili Satirlari Dengele</button>
+                  </>
+                )}
+              </div>
+              </div>
+            </section>
+
+            <section className="rail-section compact">
+              <div className="rail-section-header" onClick={() => toggleRailSection("paneltypes")}>
+                <h2>Panel Tipleri</h2>
+                <span className={`rail-section-toggle ${railCollapsed["paneltypes"] ? "collapsed" : ""}`}>▼</span>
+              </div>
+              <div className={`rail-section-body ${railCollapsed["paneltypes"] ? "collapsed" : ""}`}>
+              <div className="option-pills">
+                {openingTypeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    className={`pill-button ${
+                      selectedPanel?.panel.openingType === option.value ? "active" : ""
+                    }`}
+                    onClick={() => selectedPanel && setSelectedOpeningType(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              </div>
+            </section>
+          </>
+        ) : (
+          <>
+            <section className="rail-section">
+              <h2>Serbest Cizim</h2>
+              <p className="soft-text light">
+                Bu mod mevcut PVC editorune dokunmadan ayri bir CAD kanvasi aciyor.
+                Duvar cizip uzerine akilli kapi/pencere yerlestirebilir, secili modulu tek tikla PVC designer'a tasiyabilirsin.
+              </p>
+            </section>
+
+            <section className="rail-section compact">
+              <h2>Kisayollar</h2>
+              <div className="free-draw-shortcut-list">
+                <span>F8: Ortho</span>
+                <span>ESC: Komutu iptal et</span>
+                <span>Enter: Komutu tamamla</span>
+                <span>Delete: Secili objeyi sil</span>
+                <span>Ctrl+Z / Ctrl+Y: Geri al / Ileri al</span>
+                <span>Space + Surukle: Pan</span>
+                <span>Mouse tekeri: Zoom</span>
+              </div>
+            </section>
+          </>
+        )}
       </aside>
 
       <main className="studio-main">
@@ -2871,48 +5121,106 @@ function App() {
           </div>
 
           <div className="hero-actions">
-            <button className="hero-button primary" onClick={handleOpenNewProjectDialog}>
-              Yeni Proje
-            </button>
-            <button className="hero-button" onClick={handleOpenProject}>
-              Ac
-            </button>
-            <button className="hero-button" onClick={handleSaveProject}>
-              Kaydet
-            </button>
-            <button className="hero-button" onClick={undo}>
-              Undo
-            </button>
-            <button className="hero-button" onClick={redo}>
-              Redo
+            <button
+              className={`hero-button ${workspaceMode === "designer" ? "primary" : "ghost"}`}
+              onClick={() => setWorkspaceMode("designer")}
+            >
+              PVC Designer
             </button>
             <button
-              className={`hero-button ${viewMode === "technical" ? "primary" : "ghost"}`}
-              onClick={() => setViewMode("technical")}
+              className={`hero-button ${workspaceMode === "free-draw" ? "primary" : "ghost"}`}
+              onClick={() => setWorkspaceMode("free-draw")}
             >
-              Teknik
+              Serbest Cizim
             </button>
-            <button
-              className={`hero-button ${viewMode === "studio" ? "primary" : "ghost"}`}
-              onClick={() => setViewMode("studio")}
-            >
-              Studyo
-            </button>
-            <button
-              className={`hero-button ${viewMode === "presentation" ? "primary" : "ghost"}`}
-              onClick={() => setViewMode("presentation")}
-            >
-              Sunum
-            </button>
-            <button className="hero-button ghost" onClick={handlePrintTechnical}>
-              Teknik PDF
-            </button>
-            <button className="hero-button ghost" onClick={handlePrintBom}>
-              BOM Yazdir
-            </button>
+            {workspaceMode === "designer" && (
+              <>
+                <button className="hero-button primary" onClick={handleOpenNewProjectDialog}>
+                  Yeni Proje
+                </button>
+                <button className="hero-button" onClick={handleOpenProject}>
+                  Ac
+                </button>
+                <button className="hero-button" onClick={handleSaveProject}>
+                  Kaydet
+                </button>
+                <button className="hero-button" onClick={undo}>
+                  Undo
+                </button>
+                <button className="hero-button" onClick={redo}>
+                  Redo
+                </button>
+              </>
+            )}
+            {workspaceMode === "designer" && (
+              <>
+                <button className="hero-button ghost" onClick={handleExportDxf} title="DXF disa aktar">
+                  DXF
+                </button>
+                <button
+                  className={`hero-button ${viewMode === "technical" ? "primary" : "ghost"}`}
+                  onClick={() => setViewMode("technical")}
+                >
+                  Teknik
+                </button>
+                <button
+                  className={`hero-button ${viewMode === "studio" ? "primary" : "ghost"}`}
+                  onClick={() => setViewMode("studio")}
+                >
+                  Studyo
+                </button>
+                <button
+                  className={`hero-button ${viewMode === "presentation" ? "primary" : "ghost"}`}
+                  onClick={() => setViewMode("presentation")}
+                >
+                  Sunum
+                </button>
+                <button className="hero-button ghost" onClick={handlePrintTechnical}>
+                  Teknik PDF
+                </button>
+                <button className="hero-button ghost" onClick={handlePrintBom}>
+                  BOM Yazdir
+                </button>
+                <button className="hero-button ghost" onClick={handlePrintQuote} title="Fiyat teklifi yazdır (Ctrl+Shift+P)">
+                  💰 Teklif
+                </button>
+                <button className="hero-button ghost" onClick={handleExportSvg} title="SVG dışa aktar (Ctrl+Shift+E)">
+                  📐 SVG
+                </button>
+                <button
+                  className={`hero-button ghost ${designLocked ? "lock-active" : ""}`}
+                  onClick={handleToggleDesignLock}
+                  title={designLocked ? "Kilidi aç (Ctrl+Shift+L)" : "Tasarımı kilitle (Ctrl+Shift+L)"}
+                >
+                  {designLocked ? "🔒 Kilitli" : "🔓 Kilitsiz"}
+                </button>
+              </>
+            )}
           </div>
+          {workspaceMode === "designer" && (
+            <div className="hero-status-row">
+              <span className={`autosave-indicator ${autosaveStatus}`}>
+                {autosaveStatus === "saving" ? "⏳ Kaydediliyor…" : autosaveStatus === "saved" ? "✓ Otomatik kaydedildi" : ""}
+              </span>
+              {hasUnsavedChanges && <span className="dirty-indicator">Kaydedilmemis degisiklikler</span>}
+              {recoverableAutosaveDiffers && (
+                <button className="hero-button ghost compact" onClick={handleAutosaveRestore}>
+                  Autosave Geri Yukle
+                </button>
+              )}
+              <span className="undo-redo-counter">
+                ↩ {history.length} &nbsp;↪ {future.length}
+              </span>
+              {panelClipboard && (
+                <span className="clipboard-indicator" title={`Panpano: ${panelClipboard.label}`}>
+                  📋 {panelClipboard.label}
+                </span>
+              )}
+            </div>
+          )}
         </section>
 
+        {workspaceMode === "designer" && (
         <section className="template-strip">
           <div className="section-title-row">
             <div>
@@ -2967,26 +5275,135 @@ function App() {
             ))}
           </div>
         </section>
+        )}
 
-        <section className="work-grid">
-          <section className="canvas-stage">
+        {workspaceMode === "designer" && facadeBundleGroups.length > 0 && (
+          <section className="template-strip project-bundle-strip">
             <div className="section-title-row">
               <div>
-                <p className="eyebrow">Cizim Alani</p>
-                <h3>Canli Tasarim Yuzeyi</h3>
+                <p className="eyebrow">Serbest Cizim Baglanti</p>
+                <h3>Proje Navigatoru</h3>
               </div>
-              <div className="canvas-chip-row">
-                <span className="canvas-chip">Snap acik</span>
-                <span className="canvas-chip">Olcu modu</span>
-                <span className="canvas-chip">Ctrl+Scroll Zoom</span>
-                <span className="canvas-chip">Space Pan</span>
-                <span className="canvas-chip">Guide {design.guides.length}</span>
-                <span className="canvas-chip">
-                  {viewMode === "studio" ? "Studyo" : viewMode === "technical" ? "Teknik" : "Sunum"}
-                </span>
+              <div className="template-strip-actions">
+                <div className="metric-badge">
+                  {facadeBundleGroups.length} set / {facadeBundleGroups.reduce((sum, group) => sum + group.facadeCount, 0)} cephe
+                </div>
               </div>
             </div>
 
+            <div className="project-bundle-grid">
+              {facadeBundleGroups.map((group) => (
+                <article
+                  key={group.bundleId}
+                  className={`project-bundle-card ${design.projectLink?.bundleId === group.bundleId ? "active" : ""} ${
+                    design.projectLink?.bundleId === group.bundleId && linkedFacadeSync?.status === "stale"
+                      ? "stale"
+                      : design.projectLink?.bundleId === group.bundleId && linkedFacadeSync?.status === "missing"
+                        ? "missing"
+                        : ""
+                  }`}
+                >
+                  <div className="project-bundle-head">
+                    <div>
+                      <strong>{group.bundleName}</strong>
+                      <span>
+                        {group.roomName} / {group.facadeCount} cephe / {group.openingCount} aciklik
+                      </span>
+                    </div>
+                    <div className="project-bundle-tags">
+                      {group.wallTypes.map((wallType) => (
+                        <span key={`${group.bundleId}-${wallType}`} className="template-source-badge">
+                          {wallType === "exterior"
+                            ? "Dis"
+                            : wallType === "partition"
+                              ? "Bolme"
+                              : wallType === "curtain"
+                          ? "Giydirme"
+                                : "Ic"}
+                        </span>
+                      ))}
+                      {bundleSyncStateMap.get(group.bundleId)?.synced ? (
+                        <span className="project-bundle-state-chip synced">
+                          {bundleSyncStateMap.get(group.bundleId)?.synced} senkron
+                        </span>
+                      ) : null}
+                      {design.projectLink?.bundleId === group.bundleId && linkedFacadeSync?.status === "stale" && (
+                        <span className="project-bundle-state-chip stale">Plan Degisti</span>
+                      )}
+                      {design.projectLink?.bundleId === group.bundleId && linkedFacadeSync?.status === "missing" && (
+                        <span className="project-bundle-state-chip missing">Kaynak Yok</span>
+                      )}
+                      {bundleSyncStateMap.get(group.bundleId)?.stale ? (
+                        <span className="project-bundle-state-chip stale">
+                          {bundleSyncStateMap.get(group.bundleId)?.stale} degisen
+                        </span>
+                      ) : null}
+                      {bundleSyncStateMap.get(group.bundleId)?.missing ? (
+                        <span className="project-bundle-state-chip missing">
+                          {bundleSyncStateMap.get(group.bundleId)?.missing} eksik
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="project-bundle-actions">
+                    <button className="hero-button ghost compact" onClick={() => handleJumpToFreeDrawSource(group.templates[0])}>
+                      Planda Ac
+                    </button>
+                  </div>
+                  <div className="project-bundle-actions">
+                    {group.templates.map((template) => (
+                      <button
+                        key={template.id}
+                        className={`project-bundle-item ${template.id === design.id ? "active" : ""}`}
+                        onClick={() => handleLoadGalleryTemplate(template)}
+                      >
+                        <span>{template.projectLink?.segmentLabel ?? "Cephe"}</span>
+                        <strong>{template.name}</strong>
+                        <em>
+                          {template.totalWidth} x {template.totalHeight} mm / {template.projectLink?.openingCount ?? 0} aciklik
+                        </em>
+                      </button>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className={`work-grid ${workspaceMode === "free-draw" ? "free-draw-work-grid" : ""}`}>
+          <section className="canvas-stage" ref={canvasStageRef}>
+            <div className="section-title-row">
+              <div>
+                <p className="eyebrow">{workspaceMode === "designer" ? "Cizim Alani" : "Serbest Cizim"}</p>
+                <h3>{workspaceMode === "designer" ? "Canli Tasarim Yuzeyi" : "AutoCAD Tarzi Manuel Canvas"}</h3>
+              </div>
+              <div className="canvas-chip-row">
+                {workspaceMode === "designer" ? (
+                  <>
+                    <span className="canvas-chip">Snap acik</span>
+                    <span className="canvas-chip">Olcu modu</span>
+                    <span className="canvas-chip">Ctrl+Scroll Zoom</span>
+                    <span className="canvas-chip">Space Pan</span>
+                    <span className="canvas-chip">Guide {design.guides.length}</span>
+                    <span className="canvas-chip">
+                      {viewMode === "studio" ? "Studyo" : viewMode === "technical" ? "Teknik" : "Sunum"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="canvas-chip">Line / Rect / Circle / Arc</span>
+                    <span className="canvas-chip">END MID PERP GRID</span>
+                    <span className="canvas-chip">F8 Ortho</span>
+                    <span className="canvas-chip">Mouse Wheel Zoom</span>
+                    <span className="canvas-chip">Space Pan</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {workspaceMode === "designer" ? (
+              <>
             <PvcCanvas
               design={design}
               selected={selected}
@@ -3028,14 +5445,26 @@ function App() {
               orthoMode={orthoMode}
               polarMode={polarMode}
               polarAngle={polarAngle}
-              onWheelZoom={(delta, reset) => {
+              onWheelZoom={(delta, reset, anchor) => {
                 if (reset) {
                   setZoom(1);
                   setPan({ x: 0, y: 0 });
                   return;
                 }
-                setZoom((value) => Math.max(0.4, Math.min(2.5, Number((value + delta).toFixed(2)))));
+                const nextZoom = Math.max(0.4, Math.min(2.5, Number((zoom + delta).toFixed(2))));
+                if (anchor) {
+                  const worldAtPointer = {
+                    x: (anchor.x - pan.x) / zoom,
+                    y: (anchor.y - pan.y) / zoom
+                  };
+                  setPan({
+                    x: anchor.x - worldAtPointer.x * nextZoom,
+                    y: anchor.y - worldAtPointer.y * nextZoom
+                  });
+                }
+                setZoom(nextZoom);
               }}
+              onZoomToFit={handleZoomToFit}
               onPanStart={(clientX, clientY) => {
                 panRef.current = { startX: clientX, startY: clientY, originX: pan.x, originY: pan.y };
               }}
@@ -3058,6 +5487,7 @@ function App() {
               <span>{Math.round(zoom * 100)}%</span>
               <button className="zoom-button" onClick={() => setZoom((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))}>+</button>
               <button className="zoom-button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>100%</button>
+              <button className="zoom-button fit" onClick={handleZoomToFit} title="Ekrana Sigdir (Ctrl+Shift+F)">Sığdır</button>
               <button className={`zoom-button mode ${osnapEnabled ? "active" : ""}`} onClick={() => setOsnapEnabled((current) => !current)}>OSNAP</button>
               <button className={`zoom-button mode ${orthoMode ? "active" : ""}`} onClick={() => setOrthoMode((current) => !current)}>ORTHO</button>
               <button className={`zoom-button mode ${polarMode ? "active" : ""}`} onClick={() => setPolarMode((current) => !current)}>
@@ -3277,15 +5707,48 @@ function App() {
                 </>
               )}
             </div>
+              </>
+            ) : (
+              <Suspense
+                fallback={
+                  <div className="free-draw-loading-shell">
+                    <div className="free-draw-loading-card">
+                      <p className="eyebrow">Serbest Cizim</p>
+                      <h3>CAD modulu yukleniyor</h3>
+                      <p className="soft-text">
+                        Duvar, oda, cephe ve hosted aciklik motoru ayrik paket olarak yukleniyor.
+                      </p>
+                    </div>
+                  </div>
+                }
+              >
+                <FreeDrawCanvas
+                  onImportOpening={handleImportFreeDrawOpening}
+                  onImportWallFacade={handleImportFreeDrawWallFacade}
+                  onImportFacadeBundle={handleImportFreeDrawFacadeBundle}
+                  focusChainId={freeDrawFocusChainId}
+                  linkedFacadeDesigns={linkedFacadeDesigns}
+                  onLoadLinkedFacade={handleLoadLinkedFacadeById}
+                  designerGuides={design.guides.map((guide) => ({
+                    orientation: guide.orientation,
+                    positionMm: guide.positionMm,
+                    label: guide.label
+                  }))}
+                />
+              </Suspense>
+            )}
           </section>
 
           <aside className="right-rail">
+            {workspaceMode === "designer" ? (
+              <>
             <section className="inspector-card">
-              <div className="tab-bar">
+              <div className="tab-bar tab-bar-5">
                 <button className={`tab-button ${railTab === "inspector" ? "active" : ""}`} onClick={() => setRailTab("inspector")}>Inspector</button>
                 <button className={`tab-button ${railTab === "materials" ? "active" : ""}`} onClick={() => setRailTab("materials")}>Malzeme</button>
                 <button className={`tab-button ${railTab === "library" ? "active" : ""}`} onClick={() => setRailTab("library")}>Kutuphane</button>
                 <button className={`tab-button ${railTab === "bom" ? "active" : ""}`} onClick={() => setRailTab("bom")}>BOM</button>
+                <button className={`tab-button ${railTab === "pricing" ? "active" : ""}`} onClick={() => setRailTab("pricing")}>💰 Fiyat</button>
               </div>
 
               {railTab === "inspector" && selectedObjectInfo && (
@@ -3606,6 +6069,175 @@ function App() {
                     <label>Adres<input value={design.customer.address} onChange={(event) => setCustomerField("address", event.target.value)} /></label>
                     <label>Notlar<input value={design.customer.notes} onChange={(event) => setCustomerField("notes", event.target.value)} /></label>
                   </div>
+                  <div className="customer-crm-card">
+                    <div className="section-title-row tight">
+                      <div>
+                        <p className="eyebrow">CRM</p>
+                        <h3>Musteri Hafizasi</h3>
+                      </div>
+                      <button
+                        className="hero-button ghost compact"
+                        onClick={() => {
+                          rememberCustomerFromDesign(design);
+                          pushToast("Musteri karti kaydedildi", "success");
+                        }}
+                      >
+                        Musteriyi Kaydet
+                      </button>
+                    </div>
+                    {currentCustomerEntry ? (
+                      <div className="customer-crm-summary">
+                        <strong>{currentCustomerEntry.customerName}</strong>
+                        <span>
+                          {currentCustomerProjects.length} proje / {currentCustomerEntry.quoteCount} teklif / son calisma{" "}
+                          {new Date(currentCustomerEntry.lastWorkedAt).toLocaleDateString("tr-TR")}
+                        </span>
+                        {currentCustomerEntry.lastQuotedAt && (
+                          <span>
+                            Son teklif: {new Date(currentCustomerEntry.lastQuotedAt).toLocaleDateString("tr-TR")}
+                            {typeof currentCustomerEntry.lastQuoteTotal === "number"
+                              ? ` / ${currentCustomerEntry.lastQuoteCurrencySymbol ?? pricingReport.currencySymbol} ${currentCustomerEntry.lastQuoteTotal.toLocaleString("tr-TR", {
+                                  maximumFractionDigits: 0
+                                })}`
+                              : ""}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="soft-text">Mevcut musteri icin henuz kayit yok. Kaydettiginde projeleri burada birikmeye baslar.</p>
+                    )}
+                    {currentCustomerQuoteBreakdown.length > 0 && (
+                      <div className="customer-quote-summary">
+                        {currentCustomerQuoteBreakdown.map((item) => (
+                          <div key={`${item.currencySymbol}-${item.total}`} className="customer-quote-chip">
+                            <span>{item.currencySymbol}</span>
+                            <strong>{item.total.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {currentCustomerProjects.length > 0 && (
+                      <div className="customer-archive-section">
+                        <div className="section-title-row tight">
+                          <div>
+                            <p className="eyebrow">Proje Arsivi</p>
+                            <h3>Son Musteri Projeleri</h3>
+                          </div>
+                          <div className="mini-badge">{currentCustomerProjects.length} kayit</div>
+                        </div>
+                        <div className="customer-project-archive">
+                          {currentCustomerProjects.slice(0, 4).map((project) => (
+                            <article key={project.id} className="customer-project-card">
+                              <div className="customer-project-head">
+                                <div>
+                                  <strong>{project.name}</strong>
+                                  <span>
+                                    {project.width} x {project.height} mm / {project.projectCode || "Kod yok"}
+                                  </span>
+                                </div>
+                                <div className="mini-badge">{new Date(project.updatedAt).toLocaleDateString("tr-TR")}</div>
+                              </div>
+                              <div className="customer-project-meta">
+                                <span>{project.profileSeries}</span>
+                                <span>{project.glassType}</span>
+                                <span>{project.materialSystem}</span>
+                                <span>{project.hardwareQuality}</span>
+                              </div>
+                              <div className="customer-project-stats">
+                                <span>{project.panelCount} panel</span>
+                                <span>{project.openingCount} acilir</span>
+                                <span>{project.quoteHistory.length} teklif</span>
+                                {typeof project.quoteTotal === "number" && (
+                                  <span>
+                                    Son teklif: {project.quoteCurrencySymbol ?? pricingReport.currencySymbol}{" "}
+                                    {project.quoteTotal.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="customer-project-actions">
+                                <button
+                                  className={`hero-button ghost compact ${
+                                    selectedCustomerArchiveProject?.id === project.id ? "lock-active" : ""
+                                  }`}
+                                  onClick={() => setSelectedCustomerArchiveProjectId(project.id)}
+                                >
+                                  Karsilastir
+                                </button>
+                                <button
+                                  className="hero-button ghost compact"
+                                  onClick={() => currentCustomerEntry && handleLoadArchivedProject(project, currentCustomerEntry)}
+                                  disabled={!project.snapshot}
+                                >
+                                  Arsivden Yukle
+                                </button>
+                                <button
+                                  className="hero-button ghost compact"
+                                  onClick={() => currentCustomerEntry && handleStartArchiveRevision(project, currentCustomerEntry)}
+                                  disabled={!project.snapshot}
+                                >
+                                  Revizyon Ac
+                                </button>
+                                {project.projectPath && <span className="mini-badge">Dosya kaydi var</span>}
+                              </div>
+                              {project.quoteHistory.length > 0 && (
+                                <div className="customer-project-quotes">
+                                  {(project.quoteHistory ?? []).slice(0, 2).map((quote) => (
+                                    <div key={quote.id} className="customer-project-quote-row">
+                                      <span>{new Date(quote.quotedAt).toLocaleDateString("tr-TR")}</span>
+                                      <span>{quote.currencySymbol} {quote.total.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {selectedCustomerArchiveProject?.snapshot && (
+                      <div className="customer-archive-compare">
+                        <div className="section-title-row tight">
+                          <div>
+                            <p className="eyebrow">Karsilastirma</p>
+                            <h3>Aktif Proje vs Arsiv Kaydi</h3>
+                          </div>
+                          <div className="mini-badge">{selectedCustomerArchiveProject.name}</div>
+                        </div>
+                        <div className="source-link-compare-table compact">
+                          <div className="source-link-compare-head">
+                            <span>Alan</span>
+                            <span>Aktif</span>
+                            <span>Arsiv</span>
+                          </div>
+                          {selectedCustomerArchiveComparison.slice(0, 9).map((item) => (
+                            <div
+                              key={item.key}
+                              className={`source-link-compare-row ${item.changed ? "changed" : ""}`}
+                            >
+                              <strong>{item.label}</strong>
+                              <span>{item.current}</span>
+                              <em>{item.source}</em>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {customerRegistry.length > 0 && (
+                      <div className="customer-crm-list">
+                        {customerRegistry.slice(0, 6).map((entry) => (
+                          <button
+                            key={entry.id}
+                            className={`customer-crm-item ${entry.id === currentCustomerRegistryId ? "active" : ""}`}
+                            onClick={() => applyCustomerRegistryEntry(entry)}
+                          >
+                            <strong>{entry.customerName}</strong>
+                            <span>{entry.projects.length} proje / {entry.projectCode || "Kod yok"}</span>
+                            <em>{entry.address || "Adres girilmemis"}</em>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <div className="material-insights">
                     <div className="material-card accent">
                       <strong>{materialSystemSpec.label}</strong>
@@ -3619,12 +6251,21 @@ function App() {
                       <span>Onerilen Kasa: {profileSpec.recommendedFrameMm} mm</span>
                       <span>Maks. Kanat: {profileSpec.maxOperableWidthMm} x {profileSpec.maxOperableHeightMm} mm</span>
                     </div>
-                    <div className="material-card">
+                    <div className="material-card thermal-card">
                       <strong>{glassSpec.label}</strong>
                       <span>Dizilim: {glassSpec.buildUp}</span>
                       <span>Kalinlik: {glassSpec.thicknessLabel}</span>
-                      <span>Agirlik: {glassSpec.weightKgM2} kg/m2</span>
-                      <span>Sinif: {glassSpec.thermalClass}</span>
+                      <span>Agirlik: {glassSpec.weightKgM2} kg/m²</span>
+                      <div className="thermal-metrics">
+                        <div className={`thermal-badge u-value u-${glassSpec.thermalClass}`}>
+                          <span>U-Değeri</span>
+                          <strong>{glassSpec.uValueWm2K} W/m²K</strong>
+                        </div>
+                        <div className="thermal-badge rw-value">
+                          <span>Ses Yalıtımı</span>
+                          <strong>{glassSpec.rwDb} dB</strong>
+                        </div>
+                      </div>
                     </div>
                     <div className="material-card">
                       <strong>{hardwareSpec.label}</strong>
@@ -3738,6 +6379,191 @@ function App() {
                   </div>
                 </>
               )}
+
+              {railTab === "pricing" && (
+                <>
+                  <div className="section-title-row tight">
+                    <div>
+                      <p className="eyebrow">Fiyatlandırma</p>
+                      <h3>Teklif Hesabı</h3>
+                    </div>
+                    <button className="hero-button ghost" onClick={handlePrintQuote}>Yazdır</button>
+                  </div>
+
+                  <div className="pricing-company-card">
+                    <div className="pricing-company-head">
+                      <strong>Firma ve Teklif Ayarlari</strong>
+                      <span>{design.customer.customerName || "Musteri secilmedi"} / {design.name}</span>
+                    </div>
+                    <div className="pricing-config-grid company">
+                      <div className="pricing-config-row">
+                        <label>Firma Adi</label>
+                        <input value={pricingConfig.companyName} onChange={(e) => setPricingConfig((c) => ({ ...c, companyName: e.target.value }))} />
+                      </div>
+                      <div className="pricing-config-row">
+                        <label>Slogan</label>
+                        <input value={pricingConfig.companyTagline} onChange={(e) => setPricingConfig((c) => ({ ...c, companyTagline: e.target.value }))} />
+                      </div>
+                      <div className="pricing-config-row">
+                        <label>Telefon</label>
+                        <input value={pricingConfig.companyPhone} onChange={(e) => setPricingConfig((c) => ({ ...c, companyPhone: e.target.value }))} />
+                      </div>
+                      <div className="pricing-config-row">
+                        <label>E-posta</label>
+                        <input value={pricingConfig.companyEmail} onChange={(e) => setPricingConfig((c) => ({ ...c, companyEmail: e.target.value }))} />
+                      </div>
+                      <div className="pricing-config-row">
+                        <label>Adres</label>
+                        <input value={pricingConfig.companyAddress} onChange={(e) => setPricingConfig((c) => ({ ...c, companyAddress: e.target.value }))} />
+                      </div>
+                      <div className="pricing-config-row">
+                        <label>Gecerlilik</label>
+                        <input type="number" min="1" max="180" step="1" value={pricingConfig.validityDays} onChange={(e) => setPricingConfig((c) => ({ ...c, validityDays: Number(e.target.value) || 30 }))} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pricing-archive-card">
+                    <div className="section-title-row tight">
+                      <div>
+                        <p className="eyebrow">Teklif Arsivi</p>
+                        <h3>Musteri Portfoyu</h3>
+                      </div>
+                      <div className="mini-badge">{currentCustomerQuotes.length} teklif</div>
+                    </div>
+                    {currentCustomerEntry ? (
+                      <>
+                        <div className="pricing-archive-overview">
+                          <div className="pricing-archive-stat">
+                            <span>Arsiv Projesi</span>
+                            <strong>{currentCustomerProjects.length}</strong>
+                          </div>
+                          <div className="pricing-archive-stat">
+                            <span>Teklif Adedi</span>
+                            <strong>{currentCustomerEntry.quoteCount}</strong>
+                          </div>
+                          <div className="pricing-archive-stat">
+                            <span>Son Teklif</span>
+                            <strong>
+                              {currentCustomerQuotes[0]
+                                ? `${currentCustomerQuotes[0].currencySymbol} ${currentCustomerQuotes[0].total.toLocaleString("tr-TR", {
+                                    maximumFractionDigits: 0
+                                  })}`
+                                : "-"}
+                            </strong>
+                          </div>
+                        </div>
+                        {currentCustomerQuoteTrend.length > 0 ? (
+                          <div className="pricing-quote-timeline">
+                            {currentCustomerQuoteTrend.map((quote) => (
+                              <button
+                                key={quote.id}
+                                type="button"
+                                className={`pricing-quote-bar ${
+                                  selectedCustomerArchiveProject?.id === quote.projectId ? "active" : ""
+                                }`}
+                                onClick={() => setSelectedCustomerArchiveProjectId(quote.projectId)}
+                              >
+                                <div className="pricing-quote-bar-meta">
+                                  <span>{new Date(quote.quotedAt).toLocaleDateString("tr-TR")}</span>
+                                  <strong>{quote.projectName}</strong>
+                                </div>
+                                <div className="pricing-quote-bar-track">
+                                  <div className="pricing-quote-bar-fill" style={{ width: `${quote.widthPercent}%` }} />
+                                </div>
+                                <em>
+                                  {quote.currencySymbol} {quote.total.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
+                                </em>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="soft-text">Bu musteri icin henuz teklif arsivi olusmadi. Teklif yazdirdikca burada birikmeye baslar.</p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="soft-text">Musteri secildiginde teklif gecmisi ve proje portfoyu burada gorunur.</p>
+                    )}
+                  </div>
+
+                  <div className="pricing-config-grid">
+                    <div className="pricing-config-row">
+                      <label>Profil / m</label>
+                      <input type="number" min="0" step="10"
+                        value={pricingConfig.profilePricePerMeter}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, profilePricePerMeter: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div className="pricing-config-row">
+                      <label>Cam / m2</label>
+                      <input type="number" min="0" step="10"
+                        value={pricingConfig.glassPricePerM2}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, glassPricePerM2: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div className="pricing-config-row">
+                      <label>Donanim / set</label>
+                      <input type="number" min="0" step="50"
+                        value={pricingConfig.hardwarePricePerSet}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, hardwarePricePerSet: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div className="pricing-config-row">
+                      <label>İşçilik (%)</label>
+                      <input type="number" min="0" max="200" step="5"
+                        value={pricingConfig.laborCostPercent}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, laborCostPercent: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div className="pricing-config-row">
+                      <label>Kâr Marjı (%)</label>
+                      <input type="number" min="0" max="200" step="5"
+                        value={pricingConfig.profitMarginPercent}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, profitMarginPercent: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div className="pricing-config-row">
+                      <label>Para Birimi</label>
+                      <select value={pricingConfig.currencySymbol}
+                        onChange={(e) => setPricingConfig((c) => ({ ...c, currencySymbol: e.target.value }))}>
+                        <option value="TRY">TRY</option>
+                        <option value="EUR">EUR</option>
+                        <option value="$">$ USD</option>
+                        <option value="GBP">GBP</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="pricing-result-card">
+                    {pricingReport.lineItems.map((item) => (
+                      <div key={item.label} className="pricing-line-row">
+                        <span>{item.label}</span>
+                        <strong>{pricingReport.currencySymbol} {item.totalPrice.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                      </div>
+                    ))}
+                    <div className="pricing-line-row sub">
+                      <span>İşçilik ({pricingConfig.laborCostPercent}%)</span>
+                      <strong>{pricingReport.currencySymbol} {pricingReport.laborCost.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                    </div>
+                    <div className="pricing-line-row divider" />
+                    <div className="pricing-line-row sub">
+                      <span>Ara Toplam</span>
+                      <strong>{pricingReport.currencySymbol} {pricingReport.subtotal.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                    </div>
+                    <div className="pricing-line-row sub">
+                      <span>Kâr Marjı ({pricingConfig.profitMarginPercent}%)</span>
+                      <strong>{pricingReport.currencySymbol} {pricingReport.profitAmount.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                    </div>
+                    <div className="pricing-line-row total">
+                      <span>GENEL TOPLAM</span>
+                      <strong>{pricingReport.currencySymbol} {pricingReport.grandTotal.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}</strong>
+                    </div>
+                    <div className="pricing-unit-price">
+                      m² Birim Fiyat: <strong>{pricingReport.currencySymbol} {pricingReport.pricePerM2.toLocaleString("tr-TR", { maximumFractionDigits: 0 })}/m²</strong>
+                    </div>
+                  </div>
+                </>
+              )}
             </section>
 
             <section className="inspector-card">
@@ -3814,6 +6640,46 @@ function App() {
                 )}
               </div>
             </section>
+              </>
+            ) : (
+              <>
+                <section className="inspector-card">
+                  <div className="section-title-row tight">
+                    <div>
+                      <p className="eyebrow">Serbest Cizim</p>
+                      <h3>Calisma Onerileri</h3>
+                    </div>
+                  </div>
+                  <div className="free-draw-side-list">
+                    <span>DUVAR, PENCERE, KAPI ve SURME araclariyla akilli mimari modul cizebilirsin.</span>
+                    <span>LINE: ilk ve son noktayi tikla, zincirleme devam eder.</span>
+                    <span>RECTANGLE: iki kose ile cizilir.</span>
+                    <span>CIRCLE: merkez ve yaricap noktasi kullanilir.</span>
+                    <span>ARC: baslangic, gecis, bitis noktasi ister.</span>
+                    <span>DIMENSION: iki nokta arasi otomatik mm olculendirir.</span>
+                  </div>
+                </section>
+
+                <section className="inspector-card">
+                  <div className="section-title-row tight">
+                    <div>
+                      <p className="eyebrow">Snap ve Pan</p>
+                      <h3>CAD Davranislari</h3>
+                    </div>
+                  </div>
+                  <div className="free-draw-side-list">
+                    <span>Endpoint, midpoint, perpendicular ve grid snap acik.</span>
+                    <span>Duvar uzerine cizilen kapi/pencereler otomatik hosted plan gorunusune yerlesir ve duvarda bosluk acar.</span>
+                    <span>Secili pencere/kapida ustten hazir tipler, bolme oranlari ve vasistas duzeni hizlica secilebilir.</span>
+                    <span>Secili akilli modulde PVC'ye Aktar ile dogrudan uretim taslagi olusturabilirsin.</span>
+                    <span>F8 ile ortho acilip kapanir.</span>
+                    <span>Mouse wheel ile zoom, orta tus veya Space ile pan yapilir.</span>
+                    <span>Ctrl+Z / Ctrl+Y, Delete, ESC ve Enter desteklenir.</span>
+                    <span>SVG ve PNG export ust toolbar uzerinden alinabilir.</span>
+                  </div>
+                </section>
+              </>
+            )}
           </aside>
         </section>
       </main>
@@ -5392,6 +8258,7 @@ function PvcCanvas({
   polarMode,
   polarAngle,
   onWheelZoom,
+  onZoomToFit,
   onPanStart,
   onPanMove,
   onPanEnd,
@@ -5437,7 +8304,8 @@ function PvcCanvas({
   orthoMode: boolean;
   polarMode: boolean;
   polarAngle: number;
-  onWheelZoom: (delta: number, reset?: boolean) => void;
+  onWheelZoom: (delta: number, reset?: boolean, anchor?: CanvasScreenPoint) => void;
+  onZoomToFit: () => void;
   onPanStart: (clientX: number, clientY: number) => void;
   onPanMove: (clientX: number, clientY: number) => void;
   onPanEnd: () => void;
@@ -5954,11 +8822,7 @@ function PvcCanvas({
   }, [dragState]);
 
   const getWorldPoint = (clientX: number, clientY: number, host: HTMLDivElement) => {
-    const rect = host.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left - pan.x) / zoom,
-      y: (clientY - rect.top - pan.y) / zoom
-    };
+    return getCanvasWorldPoint(clientX, clientY, host, svgWidth, svgHeight, pan, zoom);
   };
 
   const finishMarqueeSelection = (selectionRect: { x: number; y: number; width: number; height: number }) => {
@@ -6169,7 +9033,7 @@ function PvcCanvas({
   }, [hudDimensionTarget?.key, hudDimensionTarget?.value]);
 
   function openInlineDimensionEditor(
-    event: ReactMouseEvent<SVGTextElement>,
+    event: ReactMouseEvent<SVGElement>,
     target:
       | { kind: "panel"; transomId: string; panelId: string; value: number }
       | { kind: "row"; transomId: string; value: number }
@@ -6265,13 +9129,26 @@ function PvcCanvas({
   return (
     <div
       ref={canvasRef}
-      className={`canvas-wrap premium ${isTechnical ? "technical" : ""} ${isPresentation ? "presentation" : ""}`}
+      className={`canvas-wrap premium ${isTechnical ? "technical" : ""} ${isPresentation ? "presentation" : ""} ${panEnabled ? "pan-mode" : ""}`}
       onWheel={(event) => {
-        if (!event.ctrlKey) {
-          return;
-        }
         event.preventDefault();
-        onWheelZoom(event.deltaY < 0 ? 0.08 : -0.08);
+        const anchor = getCanvasClientPoint(
+          event.clientX,
+          event.clientY,
+          event.currentTarget,
+          svgWidth,
+          svgHeight
+        );
+        onWheelZoom(event.deltaY < 0 ? 0.08 : -0.08, false, anchor);
+      }}
+      onDoubleClick={(event) => {
+        if (
+          event.target === event.currentTarget ||
+          event.target instanceof SVGSVGElement ||
+          (event.target instanceof SVGElement && event.target.classList.contains("drawing-surface"))
+        ) {
+          onZoomToFit();
+        }
       }}
       onMouseDown={(event) => {
         if (
@@ -6323,8 +9200,14 @@ function PvcCanvas({
         }
       }}
       onMouseMove={(event) => {
-        const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
-        setCursor({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+        const nextCursor = getCanvasClientPoint(
+          event.clientX,
+          event.clientY,
+          event.currentTarget,
+          svgWidth,
+          svgHeight
+        );
+        setCursor(nextCursor);
         if (marqueeStart.current) {
           const worldPoint = getWorldPoint(event.clientX, event.clientY, event.currentTarget);
           setMarquee(normalizeRect(marqueeStart.current.x, marqueeStart.current.y, worldPoint.x, worldPoint.y));
@@ -6733,6 +9616,42 @@ function PvcCanvas({
                 ? "Kanat"
                 : "Panel";
             const verticalBar = row.mullions.find((item) => item.panelId === panel.id) ?? null;
+            const beginObjectWidthResize = (event: ReactMouseEvent<SVGElement>) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCommandTargetChange({
+                type: "panel-width",
+                transomId: transom.id,
+                panelId: panel.id,
+                label: `${selectedManipulatorLabel} Genisligi - ${panel.width} mm`
+              });
+              setDragState({
+                type: "object-width",
+                transomId: transom.id,
+                panelId: panel.id,
+                startClientX: event.clientX,
+                startWidth: panel.width,
+                scale,
+                sourceLabel: selectedManipulatorLabel
+              });
+            };
+            const beginObjectHeightResize = (event: ReactMouseEvent<SVGElement>) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCommandTargetChange({
+                type: "transom-height",
+                transomId: transom.id,
+                label: `${selectedManipulatorLabel} Yuksekligi - ${transom.height} mm`
+              });
+              setDragState({
+                type: "object-height",
+                transomId: transom.id,
+                startClientY: event.clientY,
+                startHeight: transom.height,
+                scale,
+                sourceLabel: selectedManipulatorLabel
+              });
+            };
 
             return (
               <g key={panel.id}>
@@ -7109,47 +10028,33 @@ function PvcCanvas({
                       }}
                     />
                     {selectedManipulatorBounds && !isTechnical && (
-                      <ObjectManipulatorHandles
-                        bounds={selectedManipulatorBounds}
-                        tone={selectedManipulatorTone}
-                        title={`${selectedManipulatorLabel} ${Math.round(panel.width)} x ${Math.round(transom.height)}`}
-                        onWidthMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onCommandTargetChange({
-                            type: "panel-width",
-                            transomId: transom.id,
-                            panelId: panel.id,
-                            label: `${selectedManipulatorLabel} Genisligi - ${panel.width} mm`
-                          });
-                          setDragState({
-                            type: "object-width",
-                            transomId: transom.id,
-                            panelId: panel.id,
-                            startClientX: event.clientX,
-                            startWidth: panel.width,
-                            scale,
-                            sourceLabel: selectedManipulatorLabel
-                          });
-                        }}
-                        onHeightMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onCommandTargetChange({
-                            type: "transom-height",
-                            transomId: transom.id,
-                            label: `${selectedManipulatorLabel} Yuksekligi - ${transom.height} mm`
-                          });
-                          setDragState({
-                            type: "object-height",
-                            transomId: transom.id,
-                            startClientY: event.clientY,
-                            startHeight: transom.height,
-                            scale,
-                            sourceLabel: selectedManipulatorLabel
-                          });
-                        }}
-                      />
+                      <>
+                        <rect
+                          x={selectedManipulatorBounds.x + selectedManipulatorBounds.width - 14}
+                          y={selectedManipulatorBounds.y + 14}
+                          width="28"
+                          height={Math.max(selectedManipulatorBounds.height - 28, 28)}
+                          rx="12"
+                          className={`object-resize-zone ${selectedManipulatorTone} vertical`}
+                          onMouseDown={beginObjectWidthResize}
+                        />
+                        <rect
+                          x={selectedManipulatorBounds.x + 14}
+                          y={selectedManipulatorBounds.y + selectedManipulatorBounds.height - 14}
+                          width={Math.max(selectedManipulatorBounds.width - 28, 28)}
+                          height="28"
+                          rx="12"
+                          className={`object-resize-zone ${selectedManipulatorTone} horizontal`}
+                          onMouseDown={beginObjectHeightResize}
+                        />
+                        <ObjectManipulatorHandles
+                          bounds={selectedManipulatorBounds}
+                          tone={selectedManipulatorTone}
+                          title={`${selectedManipulatorLabel} ${Math.round(panel.width)} x ${Math.round(transom.height)}`}
+                          onWidthMouseDown={beginObjectWidthResize}
+                          onHeightMouseDown={beginObjectHeightResize}
+                        />
+                      </>
                     )}
                     {!isTechnical &&
                       visibleLayers.hud &&
@@ -7362,7 +10267,33 @@ function PvcCanvas({
                           : "1"
                       }
                       opacity={visibleLayers.profiles ? 1 : 0}
-                      className="divider-select-zone"
+                      className="divider-select-zone vertical"
+                      onMouseDown={(event) => {
+                        if (event.button !== 0 || isTechnical) {
+                          return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onObjectSelect({
+                          type: "mullion",
+                          transomId: transom.id,
+                          panelId: panel.id
+                        });
+                        onCommandTargetChange({
+                          type: "panel-width",
+                          transomId: transom.id,
+                          panelId: panel.id,
+                          label: `Dikey Kayit - ${panel.width} mm`
+                        });
+                        setDragState({
+                          type: "vertical",
+                          transomId: transom.id,
+                          panelId: panel.id,
+                          startClientX: event.clientX,
+                          startWidth: panel.width,
+                          scale
+                        });
+                      }}
                       onClick={(event) => {
                         event.stopPropagation();
                         onObjectSelect({
@@ -7523,7 +10454,28 @@ function PvcCanvas({
                 stroke={isActiveDivider ? "#ff8d2b" : isTechnical ? "#69b95c" : isPresentation ? "#d2b377" : "#aab1bc"}
                 strokeWidth={isActiveDivider ? "3" : "1"}
                 opacity={visibleLayers.profiles ? 1 : 0}
-                className="divider-select-zone"
+                className="divider-select-zone horizontal"
+                onMouseDown={(event) => {
+                  if (!aboveTransom || event.button !== 0 || isTechnical) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onObjectSelect({ type: "transom-bar", transomId: aboveTransom.id });
+                  onCommandTargetChange({
+                    type: "transom-height",
+                    transomId: aboveTransom.id,
+                    label: `Yatay Kayit - ${aboveTransom.height} mm`
+                  });
+                  setDragState({
+                    type: "horizontal",
+                    transomId: aboveTransom.id,
+                    startClientY: event.clientY,
+                    startHeight: aboveTransom.height,
+                    scale
+                  });
+                }}
                 onClick={(event) => {
                   event.stopPropagation();
                   if (!aboveTransom) {
@@ -9535,8 +12487,8 @@ function ObjectManipulatorHandles({
   bounds: { x: number; y: number; width: number; height: number };
   tone: "panel" | "sash" | "glass";
   title: string;
-  onWidthMouseDown: (event: ReactMouseEvent<SVGCircleElement>) => void;
-  onHeightMouseDown: (event: ReactMouseEvent<SVGCircleElement>) => void;
+  onWidthMouseDown: (event: ReactMouseEvent<SVGElement>) => void;
+  onHeightMouseDown: (event: ReactMouseEvent<SVGElement>) => void;
 }) {
   return (
     <g>
@@ -12517,18 +15469,37 @@ function DimensionText({
   technical?: boolean;
   anchor?: "start" | "middle" | "end";
   editable?: boolean;
-  onClick?: (event: ReactMouseEvent<SVGTextElement>) => void;
+  onClick?: (event: ReactMouseEvent<SVGElement>) => void;
 }) {
+  const estimatedWidth = Math.max(44, text.length * 8.5 + 22);
+  const rectX =
+    anchor === "start"
+      ? x - 8
+      : anchor === "end"
+        ? x - estimatedWidth + 8
+        : x - estimatedWidth / 2;
+
   return (
-    <text
-      x={x}
-      y={y}
-      textAnchor={anchor}
-      className={`${technical ? "technical-text-green small-text" : "svg-dimension-text"} ${editable ? "editable-dimension-text" : ""}`}
-      onClick={onClick}
-    >
-      {text}
-    </text>
+    <g className={editable ? "editable-dimension-group" : undefined} onClick={onClick}>
+      {editable && (
+        <rect
+          x={rectX}
+          y={y - 18}
+          width={estimatedWidth}
+          height="26"
+          rx="10"
+          className="editable-dimension-hit-area"
+        />
+      )}
+      <text
+        x={x}
+        y={y}
+        textAnchor={anchor}
+        className={`${technical ? "technical-text-green small-text" : "svg-dimension-text"} ${editable ? "editable-dimension-text" : ""}`}
+      >
+        {text}
+      </text>
+    </g>
   );
 }
 

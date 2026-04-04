@@ -237,6 +237,8 @@ function openingLabel(openingType: string) {
       return "Sol acilim";
     case "tilt-turn-right":
       return "Vasistas + sag";
+    case "tilt-turn-left":
+      return "Vasistas + sol";
     case "sliding":
       return "Surme";
     default:
@@ -269,7 +271,7 @@ function hardwarePartName(openingType: string) {
   if (openingType === "sliding") {
     return "Surme Rulman Takimi";
   }
-  if (openingType === "tilt-turn-right") {
+  if (openingType === "tilt-turn-right" || openingType === "tilt-turn-left") {
     return "Cift Acilim Mekanizma";
   }
   return "Menteşe Takimi";

@@ -380,7 +380,7 @@ export function buildPanelEngineering(
     approxGlassHeightMm,
     approxGlassAreaM2,
     approxSashWeightKg,
-    areaLimitOk: grossAreaM2 <= profileSpec.maxOperableAreaM2,
+    areaLimitOk: approxGlassAreaM2 <= profileSpec.maxOperableAreaM2,
     weightLimitOk: approxSashWeightKg <= hardwareSpec.maxSashWeightKg,
     seriesLimitOk:
       panelWidth <= profileSpec.maxOperableWidthMm && transomHeight <= profileSpec.maxOperableHeightMm

@@ -3,6 +3,7 @@ export type OpeningType =
   | "turn-right"
   | "turn-left"
   | "tilt-turn-right"
+  | "tilt-turn-left"
   | "sliding";
 
 export interface PanelDefinition {
@@ -66,6 +67,30 @@ export interface CustomerInfo {
   notes: string;
 }
 
+export type LinkedWallType = "interior" | "exterior" | "partition" | "curtain";
+
+export interface DesignProjectLink {
+  source: "free-draw-opening" | "free-draw-facade" | "free-draw-facade-bundle";
+  bundleId?: string;
+  bundleName?: string;
+  chainId?: string;
+  wallId?: string;
+  roomName?: string;
+  wallType?: LinkedWallType;
+  facadeTitle?: string;
+  segmentLabel?: string;
+  openingCount?: number;
+  importedAt?: string;
+}
+
+export interface DesignRevisionEntry {
+  id: string;
+  createdAt: string;
+  source: "import" | "sync" | "bulk-material" | "manual";
+  label: string;
+  detail: string;
+}
+
 export interface TransomDefinition {
   id: string;
   height: number;
@@ -93,6 +118,8 @@ export interface PvcDesign {
   guides: ReferenceGuide[];
   materials: DesignMaterials;
   customer: CustomerInfo;
+  projectLink?: DesignProjectLink;
+  revisionHistory?: DesignRevisionEntry[];
 }
 
 export interface SaveDesignPayload {
@@ -103,6 +130,7 @@ export interface SaveDesignPayload {
 export interface DesktopApi {
   saveProject: (payload: SaveDesignPayload) => Promise<{ canceled: boolean; path?: string }>;
   openProject: () => Promise<{ canceled: boolean; content?: PvcDesign; path?: string }>;
+  openProjectPath?: (path: string) => Promise<{ canceled: boolean; content?: PvcDesign; path?: string; error?: string }>;
   printBom: (html: string) => Promise<void>;
   printTechnical: (html: string) => Promise<void>;
 }

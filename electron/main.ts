@@ -108,6 +108,28 @@ ipcMain.handle("project:open", async () => {
   };
 });
 
+ipcMain.handle("project:open-path", async (_event, filePath: string) => {
+  if (!filePath) {
+    return { canceled: true, error: "Dosya yolu bulunamadi" };
+  }
+
+  try {
+    const resolvedPath = path.resolve(filePath);
+    const raw = await fs.readFile(resolvedPath, "utf-8");
+
+    return {
+      canceled: false,
+      path: resolvedPath,
+      content: JSON.parse(raw)
+    };
+  } catch {
+    return {
+      canceled: true,
+      error: "Secilen son proje dosyasi acilamadi"
+    };
+  }
+});
+
 ipcMain.handle("project:print-bom", async (_event, html: string) => {
   await openPrintWindow(html, "PVC Designer - BOM");
 });

@@ -25,6 +25,8 @@ export interface GlassSpec {
   nominalThicknessMm: number;
   weightKgM2: number;
   thermalClass: "basic" | "good" | "high";
+  uValueWm2K: number;
+  rwDb: number;
 }
 
 export interface HardwareSpec {
@@ -151,7 +153,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "4 mm",
     nominalThicknessMm: 4,
     weightKgM2: 10,
-    thermalClass: "basic"
+    thermalClass: "basic",
+    uValueWm2K: 5.8,
+    rwDb: 28
   },
   "double-clear": {
     id: "double-clear",
@@ -160,7 +164,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "20 mm",
     nominalThicknessMm: 20,
     weightKgM2: 20,
-    thermalClass: "good"
+    thermalClass: "good",
+    uValueWm2K: 2.8,
+    rwDb: 32
   },
   "triple-clear": {
     id: "triple-clear",
@@ -169,7 +175,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "36 mm",
     nominalThicknessMm: 36,
     weightKgM2: 30,
-    thermalClass: "high"
+    thermalClass: "high",
+    uValueWm2K: 0.9,
+    rwDb: 37
   },
   "double-low-e": {
     id: "double-low-e",
@@ -178,7 +186,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "24 mm",
     nominalThicknessMm: 24,
     weightKgM2: 20,
-    thermalClass: "high"
+    thermalClass: "high",
+    uValueWm2K: 1.1,
+    rwDb: 34
   },
   "triple-low-e": {
     id: "triple-low-e",
@@ -187,7 +197,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "36 mm",
     nominalThicknessMm: 36,
     weightKgM2: 30,
-    thermalClass: "high"
+    thermalClass: "high",
+    uValueWm2K: 0.6,
+    rwDb: 39
   },
   "tempered-clear": {
     id: "tempered-clear",
@@ -196,7 +208,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "6 mm",
     nominalThicknessMm: 6,
     weightKgM2: 15,
-    thermalClass: "basic"
+    thermalClass: "basic",
+    uValueWm2K: 5.8,
+    rwDb: 29
   },
   "laminated-clear": {
     id: "laminated-clear",
@@ -205,7 +219,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "8 mm",
     nominalThicknessMm: 8,
     weightKgM2: 20,
-    thermalClass: "good"
+    thermalClass: "good",
+    uValueWm2K: 5.7,
+    rwDb: 40
   },
   "reflective-blue": {
     id: "reflective-blue",
@@ -214,7 +230,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "6 mm",
     nominalThicknessMm: 6,
     weightKgM2: 15,
-    thermalClass: "good"
+    thermalClass: "good",
+    uValueWm2K: 2.9,
+    rwDb: 31
   },
   "reflective-smoke": {
     id: "reflective-smoke",
@@ -223,7 +241,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "6 mm",
     nominalThicknessMm: 6,
     weightKgM2: 15,
-    thermalClass: "good"
+    thermalClass: "good",
+    uValueWm2K: 2.9,
+    rwDb: 31
   },
   frosted: {
     id: "frosted",
@@ -232,7 +252,9 @@ export const glassCatalog: Record<GlassType, GlassSpec> = {
     thicknessLabel: "20 mm",
     nominalThicknessMm: 20,
     weightKgM2: 20,
-    thermalClass: "good"
+    thermalClass: "good",
+    uValueWm2K: 2.8,
+    rwDb: 33
   }
 };
 
